@@ -1151,7 +1151,7 @@ private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSetting
             if (expanded) {
                 Divider()
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    NumberSetting("Количество циклов", g.rounds, 1, 100) { onChange(g.copy(rounds = it)) }
+                    NumberSetting("Максимальное количество циклов", g.rounds, 1, 100) { onChange(g.copy(rounds = it)) }
 
                     Column {
                         Text("Кто отвечает первым", style = MaterialTheme.typography.labelLarge)
@@ -1170,6 +1170,9 @@ private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSetting
                             }
                         }
                     }
+
+                    Divider()
+                    BackgroundWorkSettings()
 
                     Divider()
                     Text("Логика дискуссии", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
