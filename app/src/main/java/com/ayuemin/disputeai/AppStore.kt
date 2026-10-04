@@ -94,10 +94,16 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         put("reasoningEffort", m.reasoningEffort)
         put("reasoningBudget", m.reasoningBudget)
         put("responseColor", m.responseColor)
+        put("webSearchEnabled", m.webSearchEnabled)
+        put("webSearchEngine", m.webSearchEngine)
+        put("webSearchMaxCalls", m.webSearchMaxCalls)
     }
 
     private fun modelFromJson(o: JSONObject, result: Boolean, defaultColor: Int): ModelConfig {
         val id = o.optString("id", if (result) "result" else "m")
+        val engine = o.optString("webSearchEngine", "auto").lowercase().let {
+            if (it in setOf("auto", "native", "exa", "parallel", "perplexity")) it else "auto"
+        }
         return ModelConfig(
             id = id,
             name = o.optString("name", if (result) "Модель результата" else "Модель"),
@@ -113,7 +119,10 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             reasoningEnabled = o.optBoolean("reasoningEnabled", false),
             reasoningEffort = o.optString("reasoningEffort", "auto"),
             reasoningBudget = o.optInt("reasoningBudget", 0).coerceAtLeast(0),
-            responseColor = if (o.has("responseColor")) o.optInt("responseColor", defaultColor) else defaultColor
+            responseColor = if (o.has("responseColor")) o.optInt("responseColor", defaultColor) else defaultColor,
+            webSearchEnabled = o.optBoolean("webSearchEnabled", false),
+            webSearchEngine = engine,
+            webSearchMaxCalls = o.optInt("webSearchMaxCalls", 2).coerceIn(1, 100)
         )
     }
 
@@ -134,7 +143,7 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             put(JSONObject().apply {
                 put("id", m.id); put("authorId", m.authorId); put("authorName", m.authorName); put("text", m.text)
                 put("timestamp", m.timestamp); put("cycle", m.cycle ?: JSONObject.NULL); put("isResult", m.isResult); put("error", m.error)
-                put("attachmentIds", JSONArray(m.attachmentIds))
+                put("attachmentIds", JSONArray(m.attachmentIds)); put("discussionId", m.discussionId ?: JSONObject.NULL)
             })
         } })
     }
@@ -160,7 +169,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
                     id = m.optString("id"), authorId = m.optString("authorId"), authorName = m.optString("authorName"),
                     text = m.optString("text"), timestamp = m.optLong("timestamp", System.currentTimeMillis()),
                     attachmentIds = ids, cycle = if (m.isNull("cycle")) null else m.optInt("cycle"),
-                    isResult = m.optBoolean("isResult"), error = m.optBoolean("error"), inProgress = false
+                    isResult = m.optBoolean("isResult"), error = m.optBoolean("error"), inProgress = false,
+                    discussionId = if (m.isNull("discussionId")) null else m.optString("discussionId").ifBlank { null }
                 )
             }
         }
