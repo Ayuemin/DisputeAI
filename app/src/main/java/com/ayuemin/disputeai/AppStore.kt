@@ -59,11 +59,11 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         val participants = mutableListOf<ModelConfig>()
         if (participantsArray != null) {
             for (i in 0 until participantsArray.length()) {
-                participants += modelFromJson(participantsArray.getJSONObject(i), false)
+                participants += modelFromJson(participantsArray.getJSONObject(i), false, participantDefaultColor(i))
             }
         }
         if (participants.size < 2) return AppSettings()
-        val result = o.optJSONObject("resultModel")?.let { modelFromJson(it, true) } ?: defaultResultModel()
+        val result = o.optJSONObject("resultModel")?.let { modelFromJson(it, true, DEFAULT_RESULT_COLOR) } ?: defaultResultModel()
         val g = o.optJSONObject("general")
         val general = GeneralSettings(
             rounds = g?.optInt("rounds", 3)?.coerceIn(1, 100) ?: 3,
@@ -89,9 +89,10 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         put("reasoningEnabled", m.reasoningEnabled)
         put("reasoningEffort", m.reasoningEffort)
         put("reasoningBudget", m.reasoningBudget)
+        put("responseColor", m.responseColor)
     }
 
-    private fun modelFromJson(o: JSONObject, result: Boolean): ModelConfig {
+    private fun modelFromJson(o: JSONObject, result: Boolean, defaultColor: Int): ModelConfig {
         val id = o.optString("id", if (result) "result" else "m")
         return ModelConfig(
             id = id,
@@ -107,13 +108,15 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             timeoutSec = o.optInt("timeoutSec", 180).coerceIn(10, 600),
             reasoningEnabled = o.optBoolean("reasoningEnabled", false),
             reasoningEffort = o.optString("reasoningEffort", "auto"),
-            reasoningBudget = o.optInt("reasoningBudget", 0).coerceAtLeast(0)
+            reasoningBudget = o.optInt("reasoningBudget", 0).coerceAtLeast(0),
+            responseColor = if (o.has("responseColor")) o.optInt("responseColor", defaultColor) else defaultColor
         )
     }
 
     private fun chatToJson(c: ChatSession): JSONObject = JSONObject().apply {
         put("id", c.id)
         put("title", c.title)
+        put("titleIsManual", c.titleIsManual)
         put("pinned", c.pinned)
         put("createdAt", c.createdAt)
         put("updatedAt", c.updatedAt)
@@ -123,7 +126,7 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
                 put("id", a.id); put("name", a.name); put("mime", a.mime); put("size", a.size); put("path", a.path)
             })
         } })
-        put("messages", JSONArray().apply { c.messages.forEach { m ->
+        put("messages", JSONArray().apply { c.messages.filterNot { it.inProgress }.forEach { m ->
             put(JSONObject().apply {
                 put("id", m.id); put("authorId", m.authorId); put("authorName", m.authorName); put("text", m.text)
                 put("timestamp", m.timestamp); put("cycle", m.cycle ?: JSONObject.NULL); put("isResult", m.isResult); put("error", m.error)
@@ -153,14 +156,15 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
                     id = m.optString("id"), authorId = m.optString("authorId"), authorName = m.optString("authorName"),
                     text = m.optString("text"), timestamp = m.optLong("timestamp", System.currentTimeMillis()),
                     attachmentIds = ids, cycle = if (m.isNull("cycle")) null else m.optInt("cycle"),
-                    isResult = m.optBoolean("isResult"), error = m.optBoolean("error")
+                    isResult = m.optBoolean("isResult"), error = m.optBoolean("error"), inProgress = false
                 )
             }
         }
         return ChatSession(
-            id = o.optString("id"), title = o.optString("title", "Новый чат"), pinned = o.optBoolean("pinned"),
-            createdAt = o.optLong("createdAt", System.currentTimeMillis()), updatedAt = o.optLong("updatedAt", System.currentTimeMillis()),
-            messages = messages, attachments = attachments, discussionFinished = o.optBoolean("discussionFinished", false)
+            id = o.optString("id"), title = o.optString("title", "Новый чат"), titleIsManual = o.optBoolean("titleIsManual", false),
+            pinned = o.optBoolean("pinned"), createdAt = o.optLong("createdAt", System.currentTimeMillis()),
+            updatedAt = o.optLong("updatedAt", System.currentTimeMillis()), messages = messages,
+            attachments = attachments, discussionFinished = o.optBoolean("discussionFinished", false)
         )
     }
 }
