@@ -356,6 +356,7 @@ private fun DrawerContent(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit, modifier: Modifier = Modifier) {
     val chat = state.activeChat
@@ -785,6 +786,7 @@ private fun ModelSettingsCard(
     var providerMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
     var colorPicker by remember { mutableStateOf(false) }
+    var searchEngineMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(config.baseUrl, config.model, config.provider) {
         if (config.model.isNotBlank()) {
@@ -892,6 +894,16 @@ private fun ModelSettingsCard(
                         maxLines = 8,
                         modifier = Modifier.fillMaxWidth()
                     )
+                    TextButton(
+                        onClick = {
+                            onChange(
+                                config.copy(
+                                    systemPrompt = if (config.id == "result") DEFAULT_RESULT_PROMPT else DEFAULT_PARTICIPANT_PROMPT
+                                )
+                            )
+                        },
+                        modifier = Modifier.align(Alignment.End)
+                    ) { Text("Вернуть по умолчанию") }
 
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -908,6 +920,55 @@ private fun ModelSettingsCard(
                         ) {}
                         Spacer(Modifier.width(6.dp))
                         TextButton(onClick = { colorPicker = true }) { Text("Палитра") }
+                    }
+
+                    val openRouter = config.provider == "openai" && config.baseUrl.contains("openrouter.ai", ignoreCase = true)
+                    if (openRouter) {
+                        Divider()
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("Интернет-поиск")
+                                Text(
+                                    "Модель сама решает, когда искать. Лимит ограничивает число поисковых вызовов за один ответ.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Switch(
+                                checked = config.webSearchEnabled,
+                                onCheckedChange = { onChange(config.copy(webSearchEnabled = it)) }
+                            )
+                        }
+                        if (config.webSearchEnabled) {
+                            Column {
+                                Text("Движок поиска", style = MaterialTheme.typography.labelLarge)
+                                Box {
+                                    OutlinedButton(onClick = { searchEngineMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                                        Text(searchEngineLabel(config.webSearchEngine))
+                                    }
+                                    DropdownMenu(expanded = searchEngineMenu, onDismissRequest = { searchEngineMenu = false }) {
+                                        listOf(
+                                            "auto" to "Авто",
+                                            "native" to "Native",
+                                            "parallel" to "Parallel",
+                                            "perplexity" to "Perplexity",
+                                            "exa" to "Exa"
+                                        ).forEach { (id, label) ->
+                                            DropdownMenuItem(
+                                                text = { Text(label) },
+                                                onClick = {
+                                                    searchEngineMenu = false
+                                                    onChange(config.copy(webSearchEngine = id))
+                                                }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                            NumberSetting("Лимит поисков за один ответ", config.webSearchMaxCalls, 1, 100) {
+                                onChange(config.copy(webSearchMaxCalls = it))
+                            }
+                        }
                     }
 
                     if (capability?.temperatureSupported == false) {
@@ -1110,11 +1171,36 @@ private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSetting
                         }
                     }
 
+                    Divider()
+                    Text("Логика дискуссии", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "В первом цикле модели отвечают независимо и не видят ответы друг друга этого цикла. Со второго цикла начинается общая критика и улучшение.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    PromptSetting(
+                        label = "Промпт первого цикла",
+                        value = g.firstCyclePrompt,
+                        onValueChange = { onChange(g.copy(firstCyclePrompt = it)) },
+                        onReset = { onChange(g.copy(firstCyclePrompt = DEFAULT_FIRST_CYCLE_PROMPT)) }
+                    )
+                    PromptSetting(
+                        label = "Промпт последующих циклов",
+                        value = g.laterCyclesPrompt,
+                        onValueChange = { onChange(g.copy(laterCyclesPrompt = it)) },
+                        onReset = { onChange(g.copy(laterCyclesPrompt = DEFAULT_LATER_CYCLES_PROMPT)) }
+                    )
+
+                    Divider()
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Контекст для результата")
                             Text(
-                                if (g.resultUseAllCycles) "Вся дискуссия" else "Последние ${g.resultContextCycles} циклов + все реплики пользователя",
+                                if (g.resultUseAllCycles) {
+                                    "Вся дискуссия + все реплики пользователя"
+                                } else {
+                                    "Независимый первый цикл + последние ${g.resultContextCycles} циклов + все реплики пользователя"
+                                },
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -1140,6 +1226,28 @@ private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSetting
 }
 
 @Composable
+private fun PromptSetting(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    onReset: () -> Unit
+) {
+    Column {
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            label = { Text(label) },
+            minLines = 4,
+            maxLines = 10,
+            modifier = Modifier.fillMaxWidth()
+        )
+        TextButton(onClick = onReset, modifier = Modifier.align(Alignment.End)) {
+            Text("Вернуть по умолчанию")
+        }
+    }
+}
+
+@Composable
 private fun NumberSetting(label: String, value: Int, min: Int, max: Int, onChange: (Int) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
@@ -1150,6 +1258,14 @@ private fun NumberSetting(label: String, value: Int, min: Int, max: Int, onChang
         Text(value.toString(), modifier = Modifier.width(36.dp), style = MaterialTheme.typography.bodyLarge)
         IconButton(onClick = { if (value < max) onChange(value + 1) }) { Text("+", style = MaterialTheme.typography.titleLarge) }
     }
+}
+
+private fun searchEngineLabel(id: String): String = when (id.lowercase(Locale.ROOT)) {
+    "native" -> "Native"
+    "parallel" -> "Parallel"
+    "perplexity" -> "Perplexity"
+    "exa" -> "Exa"
+    else -> "Авто"
 }
 
 private fun copyToClipboard(context: Context, text: String) {
