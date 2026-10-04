@@ -24,7 +24,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
 @Composable
-fun BackgroundWorkSettings() {
+fun BackgroundWorkSettings(showHeading: Boolean = true) {
     val context = LocalContext.current
     var batteryOptimizationDisabled by remember {
         mutableStateOf(isIgnoringBatteryOptimizations(context))
@@ -54,7 +54,9 @@ fun BackgroundWorkSettings() {
     }
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Работа в фоне", style = MaterialTheme.typography.titleSmall)
+        if (showHeading) {
+            Text("Работа в фоне", style = MaterialTheme.typography.titleSmall)
+        }
         Text(
             if (batteryOptimizationDisabled) {
                 "Оптимизация батареи для DisputeAI отключена."

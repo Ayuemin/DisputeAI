@@ -68,7 +68,7 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         val result = o.optJSONObject("resultModel")?.let { modelFromJson(it, true, DEFAULT_RESULT_COLOR) } ?: defaultResultModel()
         val g = o.optJSONObject("general")
         val general = GeneralSettings(
-            rounds = g?.optInt("rounds", 3)?.coerceIn(1, 100) ?: 3,
+            rounds = g?.optInt("rounds", 10)?.coerceIn(1, 100) ?: 10,
             firstModelId = g?.optString("firstModelId", participants.first().id).orEmpty().ifBlank { participants.first().id },
             resultContextCycles = g?.optInt("resultContextCycles", 3)?.coerceIn(1, 100) ?: 3,
             resultUseAllCycles = g?.optBoolean("resultUseAllCycles", false) ?: false,

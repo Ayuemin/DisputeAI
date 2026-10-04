@@ -10,13 +10,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Makes opening the drawer easier on large phones: a rightward swipe may start
- * from the left 28% of the screen, not only from a narrow system-edge strip.
+ * Makes opening the drawer easy on large phones: a rightward swipe may start
+ * from the left 80% of the screen, while the rightmost 20% stays outside this gesture.
  */
 fun Modifier.wideDrawerOpenGesture(
     drawerState: DrawerState,
     scope: CoroutineScope,
-    activeFraction: Float = 0.28f
+    activeFraction: Float = 0.80f
 ): Modifier = pointerInput(drawerState.currentValue, activeFraction) {
     if (drawerState.currentValue != DrawerValue.Closed) return@pointerInput
 

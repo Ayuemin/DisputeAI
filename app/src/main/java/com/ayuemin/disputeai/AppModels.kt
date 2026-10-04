@@ -24,7 +24,7 @@ data class ModelConfig(
 )
 
 data class GeneralSettings(
-    val rounds: Int = 3,
+    val rounds: Int = 10,
     val firstModelId: String = "m1",
     val resultContextCycles: Int = 3,
     val resultUseAllCycles: Boolean = false,

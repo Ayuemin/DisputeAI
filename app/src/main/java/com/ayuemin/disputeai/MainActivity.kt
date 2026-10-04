@@ -125,7 +125,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme()) {
+            MaterialTheme(colorScheme = DisputeDarkColors) {
                 DisputeApp(vm)
             }
         }
@@ -411,7 +411,7 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
                             Text(
                                 "Задайте вопрос — модели начнут обсуждение",
                                 style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.58f),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.80f),
                                 textAlign = TextAlign.Center,
                                 modifier = Modifier.widthIn(max = 300.dp).padding(horizontal = 20.dp)
                             )
@@ -433,7 +433,7 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
                                     if (configured) vm.generateResult()
                                     else Toast.makeText(context, "Настройте модель результата в настройках", Toast.LENGTH_SHORT).show()
                                 },
-                                modifier = Modifier.alpha(if (configured) 1f else 0.55f)
+                                modifier = Modifier.alpha(if (configured) 1f else 0.65f)
                             ) { Text("Результат") }
                         }
                     }
@@ -518,7 +518,7 @@ private fun MessageBubble(message: ChatMessage, chat: ChatSession, model: ModelC
                         Text(
                             "Формирует ответ…",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.90f)
                         )
                     }
 
@@ -607,24 +607,10 @@ private fun Composer(
             .imePadding()
     ) {
         Column(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
-            if (pending.isNotEmpty()) {
-                Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    pending.take(3).forEach { a ->
-                        Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.secondaryContainer) {
-                            Row(Modifier.padding(start = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Text(a.name, style = MaterialTheme.typography.labelSmall, maxLines = 1, modifier = Modifier.widthIn(max = 140.dp))
-                                IconButton(onClick = { onRemoveAttachment(a.id) }, modifier = Modifier.size(30.dp)) {
-                                    Icon(Icons.Default.Close, null, Modifier.size(16.dp))
-                                }
-                            }
-                        }
-                    }
-                    if (pending.size > 3) Text("+${pending.size - 3}", style = MaterialTheme.typography.labelMedium)
-                }
-            }
+            PendingAttachmentsSummary(
+                pending = pending,
+                onRemoveAttachment = onRemoveAttachment
+            )
 
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onPick) { Icon(Icons.Default.Add, "Добавить вложение") }
@@ -764,7 +750,8 @@ private fun SectionTitle(text: String) {
         text,
         style = MaterialTheme.typography.titleMedium,
         fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp)
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
     )
 }
 
@@ -795,10 +782,13 @@ private fun ModelSettingsCard(
         }
     }
 
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
@@ -815,7 +805,7 @@ private fun ModelSettingsCard(
             }
 
             if (expanded) {
-                Divider()
+                Divider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         OutlinedTextField(
@@ -1134,98 +1124,11 @@ private fun ModelColorPickerDialog(initialColor: Int, onDismiss: () -> Unit, onC
 
 @Composable
 private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSettings) -> Unit, onReset: () -> Unit) {
-    var expanded by rememberSaveable { mutableStateOf(true) }
-    var firstMenu by remember { mutableStateOf(false) }
-    val g = settings.general
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text("Общие настройки", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, null)
-                }
-            }
-            if (expanded) {
-                Divider()
-                Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    NumberSetting("Максимальное количество циклов", g.rounds, 1, 100) { onChange(g.copy(rounds = it)) }
-
-                    Column {
-                        Text("Кто отвечает первым", style = MaterialTheme.typography.labelLarge)
-                        Box {
-                            OutlinedButton(onClick = { firstMenu = true }, modifier = Modifier.fillMaxWidth()) {
-                                val name = settings.participants.firstOrNull { it.id == g.firstModelId }?.name ?: settings.participants.first().name
-                                Text(name)
-                            }
-                            DropdownMenu(expanded = firstMenu, onDismissRequest = { firstMenu = false }) {
-                                settings.participants.filter { it.enabled }.forEach { m ->
-                                    DropdownMenuItem(
-                                        text = { Text(m.name) },
-                                        onClick = { firstMenu = false; onChange(g.copy(firstModelId = m.id)) }
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Divider()
-                    BackgroundWorkSettings()
-
-                    Divider()
-                    Text("Логика дискуссии", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
-                    Text(
-                        "В первом цикле модели отвечают независимо и не видят ответы друг друга этого цикла. Со второго цикла начинается общая критика и улучшение.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    PromptSetting(
-                        label = "Промпт первого цикла",
-                        value = g.firstCyclePrompt,
-                        onValueChange = { onChange(g.copy(firstCyclePrompt = it)) },
-                        onReset = { onChange(g.copy(firstCyclePrompt = DEFAULT_FIRST_CYCLE_PROMPT)) }
-                    )
-                    PromptSetting(
-                        label = "Промпт последующих циклов",
-                        value = g.laterCyclesPrompt,
-                        onValueChange = { onChange(g.copy(laterCyclesPrompt = it)) },
-                        onReset = { onChange(g.copy(laterCyclesPrompt = DEFAULT_LATER_CYCLES_PROMPT)) }
-                    )
-
-                    Divider()
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("Контекст для результата")
-                            Text(
-                                if (g.resultUseAllCycles) {
-                                    "Вся дискуссия + все реплики пользователя"
-                                } else {
-                                    "Независимый первый цикл + последние ${g.resultContextCycles} циклов + все реплики пользователя"
-                                },
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                        Switch(checked = g.resultUseAllCycles, onCheckedChange = { onChange(g.copy(resultUseAllCycles = it)) })
-                    }
-                    if (!g.resultUseAllCycles) {
-                        NumberSetting("Последних циклов для результата", g.resultContextCycles, 1, 100) {
-                            onChange(g.copy(resultContextCycles = it))
-                        }
-                    }
-
-                    Divider()
-                    OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth()) {
-                        Icon(Icons.Default.Refresh, null)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Сбросить настройки")
-                    }
-                }
-            }
-        }
-    }
+    ModernGeneralSettings(
+        settings = settings,
+        onChange = onChange,
+        onReset = onReset
+    )
 }
 
 @Composable
