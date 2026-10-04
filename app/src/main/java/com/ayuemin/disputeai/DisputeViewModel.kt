@@ -307,9 +307,10 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val clean = text.trim()
         val attachments = _state.value.pendingAttachments
         if (clean.isEmpty() && attachments.isEmpty()) return
-        addUserMessage(clean, attachments.map { it.id })
+        val discussionId = "d_" + UUID.randomUUID().toString().take(12)
+        addUserMessage(clean, attachments.map { it.id }, discussionId)
         _state.value = _state.value.copy(pendingAttachments = emptyList())
-        startCycle()
+        startCycle(discussionId)
     }
 
     fun pauseCycle() {
@@ -323,7 +324,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val clean = userText.trim()
         val attachments = _state.value.pendingAttachments
         if (clean.isNotEmpty() || attachments.isNotEmpty()) {
-            addUserMessage(clean, attachments.map { it.id })
+            addUserMessage(clean, attachments.map { it.id }, _state.value.run.discussionId)
             _state.value = _state.value.copy(pendingAttachments = emptyList())
         }
         _state.value = _state.value.copy(run = _state.value.run.copy(mode = RunMode.RUNNING))
@@ -344,9 +345,15 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun addUserMessage(text: String, attachmentIds: List<String>) {
+    private fun addUserMessage(text: String, attachmentIds: List<String>, discussionId: String?) {
         updateActiveChat { chat ->
-            val msg = ChatMessage(authorId = "user", authorName = "Вы", text = text, attachmentIds = attachmentIds)
+            val msg = ChatMessage(
+                authorId = "user",
+                authorName = "Вы",
+                text = text,
+                attachmentIds = attachmentIds,
+                discussionId = discussionId
+            )
             val shouldAutoTitle = !chat.titleIsManual && chat.messages.none { it.authorId == "user" }
             val title = if (shouldAutoTitle) makeTitle(text, attachmentIds, chat) else chat.title
             chat.copy(title = title, messages = chat.messages + msg, updatedAt = System.currentTimeMillis(), discussionFinished = false)
@@ -364,18 +371,27 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         it.enabled && it.baseUrl.isNotBlank() && it.model.isNotBlank()
     }
 
-    private fun startCycle() {
+    private fun startCycle(discussionId: String) {
         val models = readyParticipants()
         if (models.size < 2) { notice("Настройте минимум две модели-участника"); return }
         val token = runToken.incrementAndGet()
-        _state.value = _state.value.copy(run = RunProgress(mode = RunMode.RUNNING, cycle = 1))
-        viewModelScope.launch(Dispatchers.IO) { runDiscussion(token, models) }
+        _state.value = _state.value.copy(
+            run = RunProgress(mode = RunMode.RUNNING, cycle = 1, discussionId = discussionId)
+        )
+        viewModelScope.launch(Dispatchers.IO) { runDiscussion(token, models, discussionId) }
     }
 
-    private suspend fun runDiscussion(token: Long, baseModels: List<ModelConfig>) {
+    private suspend fun runDiscussion(token: Long, baseModels: List<ModelConfig>, discussionId: String) {
         val general = _state.value.settings.general
         val firstIndex = baseModels.indexOfFirst { it.id == general.firstModelId }.let { if (it < 0) 0 else it }
         val models = baseModels.drop(firstIndex) + baseModels.take(firstIndex)
+        val baselineIds = _state.value.activeChat
+            ?.messages
+            ?.filterNot { it.inProgress }
+            ?.map { it.id }
+            ?.toSet()
+            .orEmpty()
+
         for (cycle in 1..general.rounds) {
             for (model in models) {
                 if (runToken.get() != token) return
@@ -383,12 +399,26 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                 if (runToken.get() != token) return
 
                 val chat = _state.value.activeChat ?: return
+                val contextChat = if (cycle == 1) {
+                    chat.copy(
+                        messages = chat.messages.filter { message ->
+                            !message.inProgress && (
+                                message.id in baselineIds ||
+                                    (message.authorId == "user" && message.discussionId == discussionId)
+                                )
+                        }
+                    )
+                } else {
+                    chat
+                }
                 val chatId = chat.id
                 val messageId = withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(run = _state.value.run.copy(cycle = cycle, currentModelId = model.id))
-                    appendProgressMessage(chatId, model, cycle, isResult = false)
+                    _state.value = _state.value.copy(
+                        run = _state.value.run.copy(cycle = cycle, currentModelId = model.id, discussionId = discussionId)
+                    )
+                    appendProgressMessage(chatId, model, cycle, isResult = false, discussionId = discussionId)
                 }
-                val result = askModel(model, chat) { text ->
+                val result = askModel(model, contextChat, cycle = cycle) { text ->
                     if (runToken.get() == token) {
                         viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, text) }
                     }
@@ -418,7 +448,13 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         while (runToken.get() == token && _state.value.run.mode == RunMode.PAUSED) delay(120)
     }
 
-    private fun appendProgressMessage(chatId: String, model: ModelConfig, cycle: Int?, isResult: Boolean): String {
+    private fun appendProgressMessage(
+        chatId: String,
+        model: ModelConfig,
+        cycle: Int?,
+        isResult: Boolean,
+        discussionId: String?
+    ): String {
         val id = UUID.randomUUID().toString()
         updateChat(chatId, persist = false) { chat ->
             chat.copy(
@@ -429,7 +465,8 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                     text = "",
                     cycle = cycle,
                     isResult = isResult,
-                    inProgress = true
+                    inProgress = true,
+                    discussionId = discussionId
                 ),
                 updatedAt = System.currentTimeMillis()
             )
@@ -464,11 +501,15 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         }
         val chat = _state.value.activeChat ?: return
         if (chat.messages.any { it.isResult && it.inProgress }) return
+        val discussionId = chat.messages
+            .asReversed()
+            .firstOrNull { !it.isResult && !it.error && !it.inProgress && it.discussionId != null }
+            ?.discussionId
         val token = resultToken.incrementAndGet()
         val chatId = chat.id
-        val messageId = appendProgressMessage(chatId, model, null, isResult = true)
+        val messageId = appendProgressMessage(chatId, model, null, isResult = true, discussionId = discussionId)
         viewModelScope.launch(Dispatchers.IO) {
-            val result = askResultModel(model, chat) { text ->
+            val result = askResultModel(model, chat, discussionId) { text ->
                 if (resultToken.get() == token) {
                     viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, text) }
                 }
@@ -485,12 +526,32 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun askResultModel(model: ModelConfig, chat: ChatSession, onProgress: (String) -> Unit): JSONObject {
+    private fun askResultModel(
+        model: ModelConfig,
+        chat: ChatSession,
+        discussionId: String?,
+        onProgress: (String) -> Unit
+    ): JSONObject {
         val g = _state.value.settings.general
-        val maxCycle = chat.messages.mapNotNull { it.cycle }.maxOrNull() ?: 0
+        val scoped = if (discussionId == null) {
+            chat.messages.filterNot { it.inProgress }
+        } else {
+            chat.messages.filter { !it.inProgress && (it.authorId == "user" || it.discussionId == discussionId) }
+        }
+        val maxCycle = scoped
+            .filter { discussionId == null || it.discussionId == discussionId }
+            .mapNotNull { it.cycle }
+            .maxOrNull() ?: 0
         val minCycle = if (g.resultUseAllCycles) 0 else (maxCycle - g.resultContextCycles + 1).coerceAtLeast(1)
-        val selected = chat.messages.filter { m ->
-            !m.inProgress && (m.authorId == "user" || (!m.isResult && m.cycle != null && (g.resultUseAllCycles || m.cycle >= minCycle)))
+        val selected = scoped.filter { m ->
+            when {
+                m.authorId == "user" -> true
+                m.isResult || m.cycle == null -> false
+                discussionId != null && m.discussionId != discussionId -> false
+                g.resultUseAllCycles -> true
+                m.cycle == 1 -> true
+                else -> m.cycle >= minCycle
+            }
         }
         return askModel(model, chat.copy(messages = selected), resultMode = true, onProgress = onProgress)
     }
@@ -499,10 +560,11 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         model: ModelConfig,
         chat: ChatSession,
         resultMode: Boolean = false,
+        cycle: Int? = null,
         onProgress: (String) -> Unit = {}
     ): JSONObject {
         val started = System.currentTimeMillis()
-        val system = buildSystem(model, chat, resultMode)
+        val system = buildSystem(model, chat, resultMode, cycle)
         val slot = slotJson(model, system)
         val messages = buildMessages(model, chat)
         var accumulated = ""
@@ -570,6 +632,9 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         put("reasoningEnabled", model.reasoningEnabled)
         put("reasoningEffort", model.reasoningEffort)
         put("reasoningBudget", model.reasoningBudget)
+        put("webSearchEnabled", model.webSearchEnabled)
+        put("webSearchEngine", model.webSearchEngine)
+        put("webSearchMaxCalls", model.webSearchMaxCalls.coerceIn(1, 100))
         _state.value.capabilities[model.id]?.let { cap ->
             put("reasoningAvailable", cap.reasoningSupported)
             put("reasoningAlwaysOn", cap.reasoningAlwaysOn)
@@ -577,16 +642,30 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun buildSystem(model: ModelConfig, chat: ChatSession, resultMode: Boolean): String {
+    private fun buildSystem(model: ModelConfig, chat: ChatSession, resultMode: Boolean, cycle: Int?): String {
         val participants = _state.value.settings.participants.filter { it.enabled }.joinToString(", ") { it.name }
+        val general = _state.value.settings.general
         val base = if (resultMode) {
             "Ты формируешь результат завершённой дискуссии. Не продолжай спор и не защищай позицию участников. " +
                 "Пользователь должен получить конечный продукт, соответствующий исходной задаче."
         } else {
-            "Ты — ${model.name}. В общей дискуссии участвуют пользователь и модели: $participants. " +
-                "Все реплики видны тебе. Отвечай только от себя, учитывай аргументы остальных и не выдумывай их реплики."
+            "Ты — ${model.name}. В общей работе участвуют пользователь и модели: $participants. Отвечай только от себя."
         }
-        return base + "\n\n" + model.systemPrompt.trim() + attachmentCatalog(chat)
+        val stage = when {
+            resultMode -> ""
+            cycle == 1 -> general.firstCyclePrompt.trim()
+            else -> general.laterCyclesPrompt.trim()
+        }
+        val searchRule = if (model.webSearchEnabled) {
+            "\n\nИнтернет-поиск доступен. Используй его только когда для задачи действительно нужны актуальные, проверяемые или неизвестные тебе факты. Не ищи в интернете ради самого поиска."
+        } else ""
+        return buildString {
+            append(base)
+            if (model.systemPrompt.isNotBlank()) append("\n\n").append(model.systemPrompt.trim())
+            if (stage.isNotBlank()) append("\n\n").append(stage)
+            append(searchRule)
+            append(attachmentCatalog(chat))
+        }
     }
 
     private fun attachmentCatalog(chat: ChatSession): String {
