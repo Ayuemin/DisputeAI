@@ -26,14 +26,50 @@ object StreamingLlmApi {
         if (slot.optString("provider", "openai") != "openai") {
             return LlmApi.call(slot, messagesJson, false)
         }
+
         val messages = JSONArray(messagesJson)
-        return try {
-            openAiStream(slot, messages, onDelta)
-        } catch (_: StreamUnsupportedException) {
-            // Keep the exact same request features (including OpenRouter web search)
-            // when an endpoint does not support SSE streaming.
-            openAiNonStream(slot, messages, onDelta)
+        val openRouterSearch = slot.optBoolean("webSearchEnabled", false) &&
+            slot.optString("baseUrl", "").contains("openrouter.ai", ignoreCase = true)
+        val requestedEngine = slot.optString("webSearchEngine", "auto").lowercase(Locale.ROOT)
+
+        // OpenRouter's own `auto` can still fail when the selected search backend
+        // has a transient 5xx. In app-level Auto mode, retry only that specific
+        // class of server-tool failure with two inexpensive alternate engines.
+        val engines = if (openRouterSearch && requestedEngine == "auto") {
+            listOf("auto", "parallel", "perplexity")
+        } else {
+            listOf(requestedEngine)
         }
+
+        var lastSearchFailure: WebSearchTransientException? = null
+        engines.forEachIndexed { index, engine ->
+            val attemptSlot = JSONObject(slot.toString()).put("webSearchEngine", engine)
+            try {
+                return callOpenAi(attemptSlot, messages, onDelta)
+            } catch (e: WebSearchTransientException) {
+                lastSearchFailure = e
+                if (index == engines.lastIndex) {
+                    throw Exception(
+                        "Интернет-поиск OpenRouter временно недоступен (HTTP ${e.httpCode}). " +
+                            "Попробуйте ещё раз или выберите другой движок поиска."
+                    )
+                }
+            }
+        }
+
+        throw lastSearchFailure ?: Exception("Не удалось выполнить запрос")
+    }
+
+    private fun callOpenAi(
+        slot: JSONObject,
+        messages: JSONArray,
+        onDelta: (String) -> Unit
+    ): JSONObject = try {
+        openAiStream(slot, messages, onDelta)
+    } catch (_: StreamUnsupportedException) {
+        // Keep the exact same request features (including OpenRouter web search)
+        // when an endpoint does not support SSE streaming.
+        openAiNonStream(slot, messages, onDelta)
     }
 
     private fun openAiStream(
@@ -74,6 +110,9 @@ object StreamingLlmApi {
             val low = error.lowercase(Locale.ROOT)
             if (code in setOf(400, 404, 405, 415, 422) && ("stream" in low || "sse" in low || "unsupported" in low)) {
                 throw StreamUnsupportedException()
+            }
+            if (isTransientWebSearchFailure(code, error)) {
+                throw WebSearchTransientException(code)
             }
             throw Exception("HTTP $code: ${safeBody(error)}")
         }
@@ -129,7 +168,12 @@ object StreamingLlmApi {
         }
         val raw = readAll(if (code in 200..299) c.inputStream else c.errorStream)
         c.disconnect()
-        if (code !in 200..299) throw Exception("HTTP $code: ${safeBody(raw)}")
+        if (code !in 200..299) {
+            if (isTransientWebSearchFailure(code, raw)) {
+                throw WebSearchTransientException(code)
+            }
+            throw Exception("HTTP $code: ${safeBody(raw)}")
+        }
         return parseOpenAiJson(JSONObject(raw), onDelta)
     }
 
@@ -277,6 +321,12 @@ object StreamingLlmApi {
         return value.toString()
     }
 
+    private fun isTransientWebSearchFailure(code: Int, body: String): Boolean {
+        if (code !in setOf(502, 503, 504)) return false
+        val low = body.lowercase(Locale.ROOT)
+        return "openrouter:web_search" in low || "web_search" in low || "server tool" in low
+    }
+
     private fun validateEndpoint(rawUrl: String, apiKey: String) {
         if (rawUrl.isBlank()) throw Exception("Не указан адрес API")
         val uri = URI.create(rawUrl.trim())
@@ -320,10 +370,12 @@ object StreamingLlmApi {
             .replace(Regex("([?&](?:key|api_key|apikey)=)[^&\\s]+", RegexOption.IGNORE_CASE)) { it.groupValues[1] + "***" }
             .replace(Regex("Bearer\\s+[A-Za-z0-9._~+/=-]{8,}", RegexOption.IGNORE_CASE), "Bearer ***")
             .replace(Regex("\\b(?:sk|sk-or-v1)-[A-Za-z0-9_-]{8,}\\b", RegexOption.IGNORE_CASE), "***")
+            .replace(Regex("(\"user_id\"\\s*:\\s*\")[^\"]+(\")", RegexOption.IGNORE_CASE)) { it.groupValues[1] + "***" + it.groupValues[2] }
         return if (redacted.length > MAX_ERROR_BODY) redacted.take(MAX_ERROR_BODY) + "…" else redacted
     }
 
     private fun trimSlash(s: String): String = s.trim().trimEnd('/')
 
     private class StreamUnsupportedException : Exception()
+    private class WebSearchTransientException(val httpCode: Int) : Exception()
 }
