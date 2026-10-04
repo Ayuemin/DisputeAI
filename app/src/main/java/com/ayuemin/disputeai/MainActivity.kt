@@ -306,10 +306,16 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
         if (uris.isNotEmpty()) scope.launch { vm.importAttachments(uris) }
     }
+    val lastResultTime = chat?.messages?.filter { it.isResult }?.maxOfOrNull { it.timestamp } ?: Long.MIN_VALUE
+    val lastDiscussionTime = chat?.messages?.filterNot { it.isResult }?.maxOfOrNull { it.timestamp } ?: Long.MIN_VALUE
+    val showResult = chat?.discussionFinished == true && lastDiscussionTime > lastResultTime
 
-    LaunchedEffect(chat?.messages?.size, chat?.discussionFinished) {
+    LaunchedEffect(chat?.messages?.size, showResult) {
         val count = chat?.messages?.size ?: 0
-        if (count > 0) listState.animateScrollToItem(count + if (chat?.discussionFinished == true) 1 else 0)
+        if (count > 0) {
+            val target = if (showResult) count else count - 1
+            listState.animateScrollToItem(target)
+        }
     }
 
     Column(modifier.fillMaxSize().statusBarsPadding()) {
@@ -318,9 +324,8 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
                 Icon(Icons.Default.Menu, "Меню")
             }
             if (state.run.mode != RunMode.IDLE) {
-                val current = state.settings.participants.firstOrNull { it.id == state.run.currentModelId }?.name.orEmpty()
                 Text(
-                    if (state.run.mode == RunMode.PAUSED) "Пауза · цикл ${state.run.cycle}" else "Цикл ${state.run.cycle}${if (current.isNotBlank()) " · $current" else ""}",
+                    if (state.run.mode == RunMode.PAUSED) "Пауза · цикл ${state.run.cycle}" else "Цикл ${state.run.cycle}",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Center)
@@ -347,7 +352,7 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
                 items(chat.messages, key = { it.id }) { msg ->
                     MessageBubble(msg, chat)
                 }
-                if (chat.discussionFinished && chat.messages.none { it.isResult }) {
+                if (showResult) {
                     item {
                         val configured = state.settings.resultModel.baseUrl.isNotBlank() && state.settings.resultModel.model.isNotBlank()
                         Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
