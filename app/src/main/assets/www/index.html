@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+<title>DisputeAI — чат двух моделей</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<div id="app">
+  <header id="topbar">
+    <div class="tb-left">
+      <button class="icon-btn" id="btnMenu" aria-label="Меню">☰</button>
+      <div id="titleWrap">
+        <div id="title">DisputeAI</div>
+        <div id="subtitle">чат двух независимых моделей</div>
+      </div>
+    </div>
+    <div class="tb-right">
+      <button class="icon-btn" id="btnSettings" aria-label="Настройки">⚙</button>
+    </div>
+  </header>
+
+  <div id="speakerBar">
+    <div class="speaker" data-slot="a"><span class="dot"></span><span class="nm">Модель A</span></div>
+    <div class="speaker" data-slot="b"><span class="dot"></span><span class="nm">Модель B</span></div>
+  </div>
+
+  <main id="messages"></main>
+  <div id="statusLine"></div>
+
+  <footer id="composer">
+    <div id="turnRow">
+      <span class="cycle-label">Цикл</span>
+      <label class="rounds">циклов <input type="number" id="roundsInput" min="1" max="100" value="3"></label>
+      <span class="spacer"></span>
+      <button class="chip pause" id="btnPause" hidden>Пауза</button>
+      <button class="chip stop" id="btnStop" hidden>Стоп</button>
+    </div>
+    <div id="attachmentBar" hidden></div>
+    <div id="inputRow">
+      <button id="btnAttach" class="attach" aria-label="Добавить файл" title="Добавить файл">＋</button>
+      <input id="fileInput" type="file" multiple hidden accept="text/*,application/json,application/pdf,image/*,.md,.markdown,.csv,.log,.xml,.yaml,.yml,.js,.ts,.py,.java,.kt,.kts,.c,.cpp,.h,.hpp,.css,.html,.htm,.fb2">
+      <textarea id="input" rows="1" placeholder="Напишите сообщение…"></textarea>
+      <button id="btnSend" class="send" aria-label="Отправить">➤</button>
+    </div>
+  </footer>
+</div>
+
+<div class="sheet" id="sheetSettings" hidden>
+  <div class="sheet-panel">
+    <div class="sheet-head"><div>Настройки</div><button class="icon-btn" data-close="sheetSettings" aria-label="Закрыть">✕</button></div>
+    <div class="sheet-body" id="settingsBody"></div>
+    <div class="sheet-foot"><button class="btn ghost" id="btnResetAll">Сбросить всё</button><button class="btn primary" id="btnSaveSettings">Готово</button></div>
+  </div>
+</div>
+
+<div class="sheet" id="sheetMenu" hidden>
+  <div class="sheet-panel">
+    <div class="sheet-head"><div>Меню</div><button class="icon-btn" data-close="sheetMenu" aria-label="Закрыть">✕</button></div>
+    <div class="sheet-body">
+      <button class="btn ghost wide" id="btnExport">Экспорт переписки</button>
+      <button class="btn ghost wide" id="btnClear">Очистить чат и вложения</button>
+      <button class="btn ghost wide" id="btnResetAll2">Сбросить настройки</button>
+      <div class="muted small">Запросы к моделям идут напрямую с телефона. Вложения остаются в истории чата и передаются модели только после её явного запроса.</div>
+    </div>
+    <div class="sheet-foot"><button class="btn primary" data-close="sheetMenu">Закрыть</button></div>
+  </div>
+</div>
+
+<script src="js/01-core.js"></script>
+<script src="js/02-providers.js"></script>
+<script src="js/03-model.js"></script>
+<script src="js/04-render.js"></script>
+<script src="js/05-turn.js"></script>
+<script src="js/06-settings.js"></script>
+<script src="js/07-bootstrap.js"></script>
+</body>
+</html>
