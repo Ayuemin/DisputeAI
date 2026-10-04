@@ -44,6 +44,35 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
+      - name: Prepare release signing
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && \
+             [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && \
+             [ -n "$ANDROID_KEY_ALIAS" ] && \
+             [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            KEYSTORE_PATH="$RUNNER_TEMP/disputeai-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+            echo "DISPUTEAI_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
+            echo "DISPUTEAI_KEYSTORE_PASSWORD=$ANDROID_KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "DISPUTEAI_KEY_ALIAS=$ANDROID_KEY_ALIAS" >> "$GITHUB_ENV"
+            echo "DISPUTEAI_KEY_PASSWORD=$ANDROID_KEY_PASSWORD" >> "$GITHUB_ENV"
+            echo "RELEASE_SIGNING_READY=true" >> "$GITHUB_ENV"
+          else
+            echo "RELEASE_SIGNING_READY=false" >> "$GITHUB_ENV"
+            echo "Persistent release-signing secrets are not configured; using the CI debug-signed APK for this release."
+          fi
+
+      - name: Build signed release APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]') && env.RELEASE_SIGNING_READY == 'true'
+        run: gradle --no-daemon --stacktrace :app:assembleRelease
+
       - name: Prepare release APK
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
         shell: bash
@@ -54,7 +83,16 @@ jobs:
             exit 1
           fi
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
-          cp app/build/outputs/apk/debug/app-debug.apk "DisputeAI-${VERSION_NAME}.apk"
+
+          if [ "$RELEASE_SIGNING_READY" = "true" ] && [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            SOURCE_APK=app/build/outputs/apk/release/app-release.apk
+            echo "RELEASE_APK_SIGNED=true" >> "$GITHUB_ENV"
+          else
+            SOURCE_APK=app/build/outputs/apk/debug/app-debug.apk
+            echo "RELEASE_APK_SIGNED=false" >> "$GITHUB_ENV"
+          fi
+
+          cp "$SOURCE_APK" "DisputeAI-${VERSION_NAME}.apk"
 
       - name: Publish GitHub Release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]')
@@ -64,35 +102,21 @@ jobs:
         run: |
           TAG="v${VERSION_NAME}"
           NOTES_FILE=$(mktemp)
-          cat > "$NOTES_FILE" <<'EOF'
-          ## DisputeAI 1.2.0
-
-          Крупное обновление логики дискуссии и интерфейса.
-
-          ### Главное
-          - полностью независимый первый цикл: модели не видят ответы друг друга;
-          - со второго цикла — взаимная критика и улучшение решений;
-          - безопасное раннее завершение спора с подтверждением DONE в следующем круге;
-          - максимум циклов теперь является верхним пределом, по умолчанию 10;
-          - отдельная модель результата, по умолчанию использующая всю дискуссию;
-          - первый независимый цикл сохраняется в контексте результата;
-          - редактируемые промпты первого и последующих циклов;
-          - streaming, Markdown, таблицы и индивидуальные цвета моделей;
-          - OpenRouter web search с выбором движка и лимитом поисковых вызовов;
-          - улучшенная работа с reasoning и понятные сообщения об API-ошибках;
-          - компактные «Вложения N» с раскрытием и удалением отдельных файлов;
-          - переработанные разворачиваемые настройки и более контрастная тёмная схема;
-          - все модели, включая модель результата, собраны в «Участники дискуссии»;
-          - «О приложении» содержит версию, репозиторий, сведения о защите API-ключей, фоновую работу и сброс;
-          - системный запрос отключения оптимизации батареи и переход к настройкам фоновой работы;
-          - зона свайпа открытия боковой панели увеличена до 80% ширины экрана;
-          - улучшено копирование и выделение Markdown-ответов долгим нажатием.
-
-          ### Требования
-          Android 7.0 и новее.
-
-          > APK этого релиза собран GitHub Actions из исходников релизного коммита.
-          EOF
+          {
+            echo "## DisputeAI ${VERSION_NAME}"
+            echo
+            awk -v version="$VERSION_NAME" '
+              $0 == "## " version { found=1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md
+            echo
+            if [ "$RELEASE_APK_SIGNED" = "true" ]; then
+              echo "> APK подписан постоянным release-ключом проекта."
+            else
+              echo "> APK этого релиза собран текущим CI. Постоянная release-подпись будет использоваться после настройки signing secrets."
+            fi
+          } > "$NOTES_FILE"
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "DisputeAI-${VERSION_NAME}.apk" --repo "$GITHUB_REPOSITORY" --clobber
