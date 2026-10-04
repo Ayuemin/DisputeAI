@@ -3,6 +3,17 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def releaseKeystorePath = System.getenv('DISPUTEAI_KEYSTORE_PATH')
+def releaseKeystorePassword = System.getenv('DISPUTEAI_KEYSTORE_PASSWORD')
+def releaseKeyAlias = System.getenv('DISPUTEAI_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('DISPUTEAI_KEY_PASSWORD')
+def hasReleaseSigning = [
+    releaseKeystorePath,
+    releaseKeystorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword
+].every { value -> value != null && !value.trim().isEmpty() }
+
 android {
     namespace 'com.ayuemin.disputeai'
     compileSdk 35
@@ -11,8 +22,8 @@ android {
         applicationId 'com.ayuemin.disputeai'
         minSdk 24
         targetSdk 35
-        versionCode 3
-        versionName '1.2.0'
+        versionCode 4
+        versionName '1.2.1'
     }
 
     buildFeatures {
@@ -34,12 +45,26 @@ android {
         freeCompilerArgs += ['-opt-in=androidx.compose.foundation.ExperimentalFoundationApi']
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            release {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseKeystorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         debug {
             debuggable false
         }
         release {
             minifyEnabled false
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }
