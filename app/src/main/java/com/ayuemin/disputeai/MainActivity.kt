@@ -153,16 +153,22 @@ private fun DisputeApp(vm: DisputeViewModel) {
             )
         }
     ) {
-        Scaffold(
-            contentWindowInsets = WindowInsets(0, 0, 0, 0),
-            snackbarHost = { SnackbarHost(snack) }
-        ) { padding ->
-            ChatScreen(
-                state = state,
-                vm = vm,
-                onMenu = { scope.launch { drawerState.open() } },
-                modifier = Modifier.padding(padding)
-            )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .wideDrawerOpenGesture(drawerState, scope)
+        ) {
+            Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                snackbarHost = { SnackbarHost(snack) }
+            ) { padding ->
+                ChatScreen(
+                    state = state,
+                    vm = vm,
+                    onMenu = { scope.launch { drawerState.open() } },
+                    modifier = Modifier.padding(padding)
+                )
+            }
         }
     }
 }
