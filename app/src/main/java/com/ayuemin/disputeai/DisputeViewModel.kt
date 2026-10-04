@@ -3,6 +3,7 @@ package com.ayuemin.disputeai
 import android.app.Application
 import android.database.Cursor
 import android.net.Uri
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
@@ -24,6 +25,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     private val secrets = SecretStore(app)
     private val store = AppStore(app, secrets)
     private val runToken = AtomicLong(0)
+    private val resultToken = AtomicLong(0)
 
     private val _state = MutableStateFlow(
         UiState(settings = store.loadSettings(), chats = store.loadChats())
@@ -55,6 +57,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     private fun notice(text: String) { _state.value = _state.value.copy(notice = text) }
 
     fun newChat() {
+        resultToken.incrementAndGet()
         stopCycle(markFinished = false)
         val chat = ChatSession()
         val chats = listOf(chat) + _state.value.chats
@@ -63,6 +66,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectChat(id: String) {
+        resultToken.incrementAndGet()
         if (_state.value.run.mode != RunMode.IDLE) stopCycle(markFinished = true)
         _state.value = _state.value.copy(activeChatId = id, pendingAttachments = emptyList())
     }
@@ -71,10 +75,13 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun renameChat(id: String, title: String) {
         val clean = title.trim().take(100)
-        if (clean.isNotEmpty()) updateChat(id) { it.copy(title = clean, updatedAt = System.currentTimeMillis()) }
+        if (clean.isNotEmpty()) {
+            updateChat(id) { it.copy(title = clean, titleIsManual = true, updatedAt = System.currentTimeMillis()) }
+        }
     }
 
     fun deleteChat(id: String) {
+        resultToken.incrementAndGet()
         val target = _state.value.chats.firstOrNull { it.id == id } ?: return
         if (_state.value.activeChatId == id && _state.value.run.mode != RunMode.IDLE) stopCycle(markFinished = false)
         target.attachments.forEach { runCatching { File(it.path).delete() } }
@@ -90,30 +97,41 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         persistChats(chats)
     }
 
-    private fun updateChat(id: String, transform: (ChatSession) -> ChatSession) {
+    private fun updateChat(id: String, persist: Boolean = true, transform: (ChatSession) -> ChatSession) {
         val chats = _state.value.chats.map { if (it.id == id) transform(it) else it }
         _state.value = _state.value.copy(chats = chats)
-        persistChats(chats)
+        if (persist) persistChats(chats)
     }
 
-    private fun updateActiveChat(transform: (ChatSession) -> ChatSession) {
+    private fun updateActiveChat(persist: Boolean = true, transform: (ChatSession) -> ChatSession) {
         val id = _state.value.activeChatId ?: return
-        updateChat(id, transform)
+        updateChat(id, persist, transform)
     }
 
     fun updateParticipant(config: ModelConfig) {
         val s = _state.value.settings
+        val previous = s.participants.firstOrNull { it.id == config.id }
         val updated = s.participants.map { if (it.id == config.id) config.copy(hasApiKey = secrets.has(config.id)) else it }
         val first = if (updated.any { it.id == s.general.firstModelId }) s.general.firstModelId else updated.first().id
         val next = s.copy(participants = updated, general = s.general.copy(firstModelId = first))
-        _state.value = _state.value.copy(settings = next)
+        var caps = _state.value.capabilities
+        var tests = _state.value.modelTests
+        if (previous == null || previous.baseUrl != config.baseUrl || previous.model != config.model || previous.provider != config.provider) {
+            caps = caps - config.id
+            tests = tests - config.id
+        }
+        _state.value = _state.value.copy(settings = next, capabilities = caps, modelTests = tests)
         persistSettings(next)
     }
 
     fun addParticipant() {
         val s = _state.value.settings
         val n = s.participants.size + 1
-        val config = ModelConfig(id = "m_" + UUID.randomUUID().toString().take(8), name = "Модель $n")
+        val config = ModelConfig(
+            id = "m_" + UUID.randomUUID().toString().take(8),
+            name = "Модель $n",
+            responseColor = participantDefaultColor(s.participants.size)
+        )
         val next = s.copy(participants = s.participants + config)
         _state.value = _state.value.copy(settings = next)
         persistSettings(next)
@@ -126,14 +144,25 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val list = s.participants.filterNot { it.id == id }
         val first = if (list.any { it.id == s.general.firstModelId }) s.general.firstModelId else list.first().id
         val next = s.copy(participants = list, general = s.general.copy(firstModelId = first))
-        _state.value = _state.value.copy(settings = next, capabilities = _state.value.capabilities - id)
+        _state.value = _state.value.copy(
+            settings = next,
+            capabilities = _state.value.capabilities - id,
+            modelTests = _state.value.modelTests - id
+        )
         persistSettings(next)
     }
 
     fun updateResultModel(config: ModelConfig) {
         val s = _state.value.settings
+        val previous = s.resultModel
         val next = s.copy(resultModel = config.copy(hasApiKey = secrets.has(config.id)))
-        _state.value = _state.value.copy(settings = next)
+        var caps = _state.value.capabilities
+        var tests = _state.value.modelTests
+        if (previous.baseUrl != config.baseUrl || previous.model != config.model || previous.provider != config.provider) {
+            caps = caps - config.id
+            tests = tests - config.id
+        }
+        _state.value = _state.value.copy(settings = next, capabilities = caps, modelTests = tests)
         persistSettings(next)
     }
 
@@ -147,6 +176,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val clean = key.trim()
         if (clean.isNotEmpty()) secrets.put(modelId, clean)
         refreshKeyFlags()
+        _state.value = _state.value.copy(modelTests = _state.value.modelTests - modelId)
         persistSettings()
         notice("API-ключ сохранён в Android Keystore")
     }
@@ -154,14 +184,16 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     fun clearApiKey(modelId: String) {
         secrets.remove(modelId)
         refreshKeyFlags()
+        _state.value = _state.value.copy(modelTests = _state.value.modelTests - modelId)
         persistSettings()
         notice("API-ключ удалён")
     }
 
     fun resetSettings() {
+        resultToken.incrementAndGet()
         stopCycle(markFinished = false)
         val defaults = store.resetSettings()
-        _state.value = _state.value.copy(settings = defaults, capabilities = emptyMap())
+        _state.value = _state.value.copy(settings = defaults, capabilities = emptyMap(), modelTests = emptyMap())
         notice("Настройки сброшены. История чатов сохранена.")
     }
 
@@ -190,14 +222,26 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun testModel(modelId: String) {
         val model = findModel(modelId) ?: return
-        if (model.baseUrl.isBlank() || model.model.isBlank()) { notice("Укажите адрес API и ID модели"); return }
+        if (model.baseUrl.isBlank() || model.model.isBlank()) {
+            _state.value = _state.value.copy(
+                modelTests = _state.value.modelTests + (modelId to ModelTestState(success = false, message = "Укажите адрес API и ID модели"))
+            )
+            return
+        }
+        _state.value = _state.value.copy(
+            modelTests = _state.value.modelTests + (modelId to ModelTestState(checking = true, message = "Проверяем подключение…"))
+        )
         viewModelScope.launch(Dispatchers.IO) {
             val result = runCatching {
                 val slot = slotJson(model, model.systemPrompt)
                 LlmApi.call(slot, "[{\"role\":\"user\",\"content\":\"Ответь одним словом: OK\"}]", true)
             }.getOrElse { LlmApi.fail(it) }
             withContext(Dispatchers.Main) {
-                notice(if (result.optBoolean("ok")) "Подключение работает" else result.optString("error", "Ошибка подключения"))
+                val ok = result.optBoolean("ok")
+                val text = if (ok) "Подключение работает" else result.optString("error", "Ошибка подключения")
+                _state.value = _state.value.copy(
+                    modelTests = _state.value.modelTests + (modelId to ModelTestState(checking = false, success = ok, message = text))
+                )
             }
             probeCapabilities(modelId)
         }
@@ -210,9 +254,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun importAttachments(uris: List<Uri>) {
         val chat = _state.value.activeChat ?: return
-        val imported = withContext(Dispatchers.IO) {
-            uris.mapNotNull { uri -> importOne(chat.id, uri) }
-        }
+        val imported = withContext(Dispatchers.IO) { uris.mapNotNull { uri -> importOne(chat.id, uri) } }
         if (imported.isEmpty()) return
         val chats = _state.value.chats.map {
             if (it.id == chat.id) it.copy(attachments = it.attachments + imported, updatedAt = System.currentTimeMillis()) else it
@@ -290,14 +332,23 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     fun stopCycle(markFinished: Boolean = true) {
         runToken.incrementAndGet()
         val id = _state.value.activeChatId
-        _state.value = _state.value.copy(run = RunProgress(), pendingAttachments = _state.value.pendingAttachments)
-        if (markFinished && id != null) updateChat(id) { it.copy(discussionFinished = true, updatedAt = System.currentTimeMillis()) }
+        _state.value = _state.value.copy(run = RunProgress())
+        if (id != null) {
+            updateChat(id) { chat ->
+                chat.copy(
+                    messages = chat.messages.filterNot { it.inProgress },
+                    discussionFinished = if (markFinished) true else chat.discussionFinished,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        }
     }
 
     private fun addUserMessage(text: String, attachmentIds: List<String>) {
         updateActiveChat { chat ->
             val msg = ChatMessage(authorId = "user", authorName = "Вы", text = text, attachmentIds = attachmentIds)
-            val title = if (chat.messages.none { it.authorId == "user" }) makeTitle(text, attachmentIds, chat) else chat.title
+            val shouldAutoTitle = !chat.titleIsManual && chat.messages.none { it.authorId == "user" }
+            val title = if (shouldAutoTitle) makeTitle(text, attachmentIds, chat) else chat.title
             chat.copy(title = title, messages = chat.messages + msg, updatedAt = System.currentTimeMillis(), discussionFinished = false)
         }
     }
@@ -330,26 +381,31 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                 if (runToken.get() != token) return
                 waitIfPaused(token)
                 if (runToken.get() != token) return
-                withContext(Dispatchers.Main) {
-                    _state.value = _state.value.copy(run = _state.value.run.copy(cycle = cycle, currentModelId = model.id))
-                }
+
                 val chat = _state.value.activeChat ?: return
-                val result = askModel(model, chat)
+                val chatId = chat.id
+                val messageId = withContext(Dispatchers.Main) {
+                    _state.value = _state.value.copy(run = _state.value.run.copy(cycle = cycle, currentModelId = model.id))
+                    appendProgressMessage(chatId, model, cycle, isResult = false)
+                }
+                val result = askModel(model, chat) { text ->
+                    if (runToken.get() == token) {
+                        viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, text) }
+                    }
+                }
                 if (runToken.get() != token) return
+
                 withContext(Dispatchers.Main) {
                     if (result.optBoolean("ok")) {
-                        appendModelMessage(model, result.optString("text"), cycle, false)
+                        finalizeProgressMessage(chatId, messageId, result.optString("text"), error = false)
                     } else {
-                        appendModelMessage(model, result.optString("error", "Ошибка модели"), cycle, true)
-                    }
-                }
-                if (!result.optBoolean("ok")) {
-                    withContext(Dispatchers.Main) {
-                        notice("Цикл остановлен: ${result.optString("error", "ошибка модели")}")
+                        val error = result.optString("error", "Ошибка модели")
+                        finalizeProgressMessage(chatId, messageId, error, error = true)
+                        notice("Цикл остановлен: $error")
                         stopCycle(markFinished = true)
                     }
-                    return
                 }
+                if (!result.optBoolean("ok")) return
             }
         }
         if (runToken.get() == token) withContext(Dispatchers.Main) {
@@ -362,16 +418,42 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         while (runToken.get() == token && _state.value.run.mode == RunMode.PAUSED) delay(120)
     }
 
-    private fun appendModelMessage(model: ModelConfig, text: String, cycle: Int?, error: Boolean, isResult: Boolean = false) {
-        updateActiveChat { chat ->
+    private fun appendProgressMessage(chatId: String, model: ModelConfig, cycle: Int?, isResult: Boolean): String {
+        val id = UUID.randomUUID().toString()
+        updateChat(chatId, persist = false) { chat ->
             chat.copy(
                 messages = chat.messages + ChatMessage(
-                    authorId = model.id, authorName = model.name.ifBlank { "Модель" }, text = text,
-                    cycle = cycle, isResult = isResult, error = error
+                    id = id,
+                    authorId = model.id,
+                    authorName = model.name.ifBlank { "Модель" },
+                    text = "",
+                    cycle = cycle,
+                    isResult = isResult,
+                    inProgress = true
                 ),
                 updatedAt = System.currentTimeMillis()
             )
         }
+        return id
+    }
+
+    private fun updateProgressMessage(chatId: String, messageId: String, text: String) {
+        updateChat(chatId, persist = false) { chat ->
+            chat.copy(messages = chat.messages.map { if (it.id == messageId) it.copy(text = text, inProgress = true) else it })
+        }
+    }
+
+    private fun finalizeProgressMessage(chatId: String, messageId: String, text: String, error: Boolean) {
+        updateChat(chatId) { chat ->
+            chat.copy(
+                messages = chat.messages.map { if (it.id == messageId) it.copy(text = text, error = error, inProgress = false) else it },
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private fun removeProgressMessage(chatId: String, messageId: String) {
+        updateChat(chatId, persist = false) { chat -> chat.copy(messages = chat.messages.filterNot { it.id == messageId }) }
     }
 
     fun generateResult() {
@@ -381,40 +463,76 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         val chat = _state.value.activeChat ?: return
+        if (chat.messages.any { it.isResult && it.inProgress }) return
+        val token = resultToken.incrementAndGet()
+        val chatId = chat.id
+        val messageId = appendProgressMessage(chatId, model, null, isResult = true)
         viewModelScope.launch(Dispatchers.IO) {
-            withContext(Dispatchers.Main) { notice("Модель результата анализирует дискуссию…") }
-            val result = askResultModel(model, chat)
+            val result = askResultModel(model, chat) { text ->
+                if (resultToken.get() == token) {
+                    viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, text) }
+                }
+            }
+            if (resultToken.get() != token) return@launch
             withContext(Dispatchers.Main) {
-                if (result.optBoolean("ok")) appendModelMessage(model, result.optString("text"), null, false, true)
-                else notice(result.optString("error", "Не удалось получить результат"))
+                if (result.optBoolean("ok")) {
+                    finalizeProgressMessage(chatId, messageId, result.optString("text"), error = false)
+                } else {
+                    removeProgressMessage(chatId, messageId)
+                    notice(result.optString("error", "Не удалось получить результат"))
+                }
             }
         }
     }
 
-    private fun askResultModel(model: ModelConfig, chat: ChatSession): JSONObject {
+    private fun askResultModel(model: ModelConfig, chat: ChatSession, onProgress: (String) -> Unit): JSONObject {
         val g = _state.value.settings.general
         val maxCycle = chat.messages.mapNotNull { it.cycle }.maxOrNull() ?: 0
         val minCycle = if (g.resultUseAllCycles) 0 else (maxCycle - g.resultContextCycles + 1).coerceAtLeast(1)
         val selected = chat.messages.filter { m ->
-            m.authorId == "user" || (!m.isResult && m.cycle != null && (g.resultUseAllCycles || m.cycle >= minCycle))
+            !m.inProgress && (m.authorId == "user" || (!m.isResult && m.cycle != null && (g.resultUseAllCycles || m.cycle >= minCycle)))
         }
-        return askModel(model, chat.copy(messages = selected), resultMode = true)
+        return askModel(model, chat.copy(messages = selected), resultMode = true, onProgress = onProgress)
     }
 
-    private fun askModel(model: ModelConfig, chat: ChatSession, resultMode: Boolean = false): JSONObject {
+    private fun askModel(
+        model: ModelConfig,
+        chat: ChatSession,
+        resultMode: Boolean = false,
+        onProgress: (String) -> Unit = {}
+    ): JSONObject {
         val started = System.currentTimeMillis()
         val system = buildSystem(model, chat, resultMode)
         val slot = slotJson(model, system)
-        var messages = buildMessages(model, chat)
+        val messages = buildMessages(model, chat)
         var accumulated = ""
         var fileHops = 0
         var continuationHops = 0
         val usage = JSONObject()
+        var lastUiPush = 0L
+
+        fun publish(text: String, force: Boolean = false) {
+            val now = SystemClock.elapsedRealtime()
+            if (force || now - lastUiPush >= 45L) {
+                lastUiPush = now
+                onProgress(text)
+            }
+        }
+
         while (true) {
-            val res = try { LlmApi.call(slot, messages.toString(), false) } catch (e: Exception) { LlmApi.fail(e) }
+            val current = StringBuilder()
+            val res = try {
+                StreamingLlmApi.call(slot, messages.toString()) { delta ->
+                    current.append(delta)
+                    val live = current.toString()
+                    if (!containsAttachmentCommand(live)) publish(accumulated + live)
+                }
+            } catch (e: Exception) {
+                LlmApi.fail(e)
+            }
             if (!res.optBoolean("ok")) return res
             mergeUsage(usage, res.optJSONObject("usage"))
-            val text = res.optString("text", "")
+            val text = res.optString("text").ifBlank { current.toString() }
             val requested = parseAttachmentRequest(text)
             if (requested.isNotEmpty()) {
                 if (++fileHops > 12) return LlmApi.fail(Exception("Модель слишком много раз запрашивает вложения"))
@@ -422,7 +540,9 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                 messages.put(requestedAttachmentMessage(requested, chat))
                 continue
             }
-            accumulated = if (accumulated.isBlank()) text else accumulated + if (text.isBlank()) "" else "\n$text"
+
+            accumulated += text
+            publish(accumulated, force = true)
             if (finishWasLength(res.optString("finishReason"))) {
                 if (++continuationHops > 64) break
                 messages.put(JSONObject().put("role", "assistant").put("content", text))
@@ -431,7 +551,11 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
             }
             break
         }
-        return JSONObject().put("ok", true).put("text", accumulated).put("ms", System.currentTimeMillis() - started).put("usage", usage)
+        return JSONObject()
+            .put("ok", true)
+            .put("text", accumulated)
+            .put("ms", System.currentTimeMillis() - started)
+            .put("usage", usage)
     }
 
     private fun slotJson(model: ModelConfig, system: String): JSONObject = JSONObject().apply {
@@ -475,7 +599,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun buildMessages(model: ModelConfig, chat: ChatSession): JSONArray {
         val out = JSONArray()
-        chat.messages.filterNot { it.error }.forEach { m ->
+        chat.messages.filterNot { it.error || it.inProgress }.forEach { m ->
             val role = if (m.authorId == model.id) "assistant" else "user"
             val prefix = if (m.authorId == model.id) "" else "${if (m.isResult) "Результат предыдущей дискуссии" else m.authorName}: "
             var text = prefix + m.text
@@ -487,11 +611,16 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
             val last = out.optJSONObject(out.length() - 1)
             if (last != null && last.optString("role") == role && last.opt("content") is String) {
                 last.put("content", last.optString("content") + "\n\n" + text)
-            } else out.put(JSONObject().put("role", role).put("content", text))
+            } else {
+                out.put(JSONObject().put("role", role).put("content", text))
+            }
         }
         if (out.length() == 0) out.put(JSONObject().put("role", "user").put("content", "Начни обсуждение."))
         return out
     }
+
+    private fun containsAttachmentCommand(text: String): Boolean =
+        text.contains("[[DISPUTEAI_FILE:", ignoreCase = true)
 
     private fun parseAttachmentRequest(text: String): List<String> {
         val ids = linkedSetOf<String>()
