@@ -1,6 +1,11 @@
 package com.ayuemin.disputeai
 
+import android.Manifest
 import android.content.ClipData
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.os.Build
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Color as AndroidColor
@@ -110,6 +115,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -131,7 +137,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class AppScreen { CHAT, SETTINGS }
+private enum class AppScreen { CHAT, CHAT_SETTINGS, ABOUT_API }
 
 @Composable
 private fun DisputeApp(vm: DisputeViewModel) {
@@ -141,6 +147,7 @@ private fun DisputeApp(vm: DisputeViewModel) {
     val scope = rememberCoroutineScope()
     val snack = remember { SnackbarHostState() }
     val keyboard = LocalSoftwareKeyboardController.current
+    NotificationPermissionEffect()
 
     LaunchedEffect(state.notice) {
         state.notice?.let {
@@ -153,11 +160,18 @@ private fun DisputeApp(vm: DisputeViewModel) {
         if (drawerState.currentValue == DrawerValue.Open) keyboard?.hide()
     }
 
-    BackHandler(enabled = screen == AppScreen.SETTINGS) { screen = AppScreen.CHAT }
+    BackHandler(enabled = screen != AppScreen.CHAT) { screen = AppScreen.CHAT }
 
-    if (screen == AppScreen.SETTINGS) {
-        SettingsScreen(vm = vm, state = state, onBack = { screen = AppScreen.CHAT })
-        return
+    when (screen) {
+        AppScreen.CHAT_SETTINGS -> {
+            ChatSettingsScreen(vm = vm, state = state, onBack = { screen = AppScreen.CHAT })
+            return
+        }
+        AppScreen.ABOUT_API -> {
+            AboutApiScreen(vm = vm, state = state, onBack = { screen = AppScreen.CHAT })
+            return
+        }
+        AppScreen.CHAT -> Unit
     }
 
     ModalNavigationDrawer(
@@ -171,10 +185,16 @@ private fun DisputeApp(vm: DisputeViewModel) {
                 onPin = vm::pinChat,
                 onRename = vm::renameChat,
                 onDelete = vm::deleteChat,
-                onSettings = {
+                onChatSettings = { id ->
+                    vm.selectChat(id)
                     keyboard?.hide()
                     scope.launch { drawerState.close() }
-                    screen = AppScreen.SETTINGS
+                    screen = AppScreen.CHAT_SETTINGS
+                },
+                onAboutApi = {
+                    keyboard?.hide()
+                    scope.launch { drawerState.close() }
+                    screen = AppScreen.ABOUT_API
                 }
             )
         }
@@ -211,7 +231,8 @@ private fun DrawerContent(
     onPin: (String, Boolean) -> Unit,
     onRename: (String, String) -> Unit,
     onDelete: (String) -> Unit,
-    onSettings: () -> Unit
+    onChatSettings: (String) -> Unit,
+    onAboutApi: () -> Unit
 ) {
     var searchMode by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -309,6 +330,11 @@ private fun DrawerContent(
                                         onClick = { menu = false; renameTarget = chat; renameText = chat.title }
                                     )
                                     DropdownMenuItem(
+                                        text = { Text("Настройки чата") },
+                                        leadingIcon = { Icon(Icons.Default.Settings, null) },
+                                        onClick = { menu = false; onChatSettings(chat.id) }
+                                    )
+                                    DropdownMenuItem(
                                         text = { Text("Удалить") },
                                         leadingIcon = { Icon(Icons.Default.Delete, null) },
                                         onClick = { menu = false; deleteTarget = chat }
@@ -322,9 +348,9 @@ private fun DrawerContent(
 
             Divider()
             ListItem(
-                headlineContent = { Text("Настройки") },
+                headlineContent = { Text("О приложении и API") },
                 leadingContent = { Icon(Icons.Default.Settings, null) },
-                modifier = Modifier.combinedClickable(onClick = onSettings, onLongClick = {})
+                modifier = Modifier.combinedClickable(onClick = onAboutApi, onLongClick = {})
             )
             Spacer(Modifier.navigationBarsPadding())
         }
@@ -361,6 +387,7 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
     val chat = state.activeChat
     val listState = rememberLazyListState()
     var draft by rememberSaveable(state.activeChatId) { mutableStateOf("") }
+    var confirmClearDiscussion by rememberSaveable(state.activeChatId) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
@@ -390,6 +417,13 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.Center)
                 )
+            }
+            IconButton(
+                onClick = { confirmClearDiscussion = true },
+                enabled = chat?.messages?.isNotEmpty() == true || state.run.mode != RunMode.IDLE,
+                modifier = Modifier.align(Alignment.CenterEnd).padding(end = 6.dp)
+            ) {
+                Icon(Icons.Default.Refresh, "Очистить дискуссию")
             }
         }
 
@@ -425,12 +459,14 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
 
                 if (showResult) {
                     item {
-                        val configured = state.settings.resultModel.baseUrl.isNotBlank() && state.settings.resultModel.model.isNotBlank()
+                        val resultConfig = state.settings.resultModel
+                        val resultApi = state.apiProfiles.firstOrNull { it.id == resultConfig.apiProfileId }
+                        val configured = resultConfig.model.isNotBlank() && resultApi?.baseUrl?.isNotBlank() == true
                         Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
                             FilledTonalButton(
                                 onClick = {
                                     if (configured) vm.generateResult()
-                                    else Toast.makeText(context, "Настройте модель результата в настройках", Toast.LENGTH_SHORT).show()
+                                    else Toast.makeText(context, "Настройте модель результата в настройках чата", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.alpha(if (configured) 1f else 0.65f)
                             ) { Text("Результат") }
@@ -451,6 +487,26 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
             onPause = vm::pauseCycle,
             onContinue = { vm.continueCycle(draft); draft = "" },
             onStop = { vm.stopCycle(true) }
+        )
+    }
+
+    if (confirmClearDiscussion) {
+        AlertDialog(
+            onDismissRequest = { confirmClearDiscussion = false },
+            title = { Text("Очистить дискуссию?") },
+            text = {
+                Text("Сообщения, результат и вложения этого чата будут удалены. Название и настройки сценария сохранятся.")
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmClearDiscussion = false
+                        vm.clearActiveDiscussion()
+                        draft = ""
+                    }
+                ) { Text("Очистить") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClearDiscussion = false }) { Text("Отмена") } }
         )
     }
 }
@@ -655,9 +711,7 @@ private fun Composer(
 }
 
 @Composable
-private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> Unit) {
-    var confirmReset by remember { mutableStateOf(false) }
-
+private fun ChatSettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> Unit) {
     LaunchedEffect(Unit) {
         resetSettingsAccordion()
     }
@@ -670,7 +724,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
     ) {
         Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Назад") }
-            Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+            Text("Настройки чата", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         }
         Divider()
         LazyColumn(
@@ -689,6 +743,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
                     state.settings.participants.forEach { model ->
                         ModelSettingsCard(
                             config = model,
+                            apiProfiles = state.apiProfiles,
                             capability = state.capabilities[model.id],
                             testState = state.modelTests[model.id],
                             canDelete = state.settings.participants.size > 2,
@@ -717,6 +772,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
                     )
                     ModelSettingsCard(
                         config = state.settings.resultModel,
+                        apiProfiles = state.apiProfiles,
                         capability = state.capabilities[state.settings.resultModel.id],
                         testState = state.modelTests[state.settings.resultModel.id],
                         canDelete = false,
@@ -737,24 +793,157 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
                 )
             }
 
-            item {
-                AboutAppSettings(onReset = { confirmReset = true })
-            }
 
             item { Spacer(Modifier.navigationBarsPadding()) }
         }
     }
 
-    if (confirmReset) {
-        AlertDialog(
-            onDismissRequest = { confirmReset = false },
-            title = { Text("Сбросить настройки?") },
-            text = { Text("Будут сброшены настройки всех моделей и общие параметры, а сохранённые API-ключи удалены. История чатов и вложения останутся.") },
-            confirmButton = {
-                TextButton(onClick = { confirmReset = false; vm.resetSettings() }) { Text("Сбросить") }
-            },
-            dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Отмена") } }
+}
+
+
+@Composable
+private fun NotificationPermissionEffect() {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val context = LocalContext.current
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+  launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+}
+
+@Composable
+private fun AboutApiScreen(vm: DisputeViewModel, state: UiState, onBack: () -> Unit) {
+    val context = LocalContext.current
+    Column(
+        Modifier
+  .fillMaxSize()
+  .statusBarsPadding()
+  .rightEdgeBackGesture(onBack)
+    ) {
+        Row(Modifier.fillMaxWidth().height(56.dp), verticalAlignment = Alignment.CenterVertically) {
+  IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Назад") }
+  Text("О приложении и API", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        }
+        Divider()
+        LazyColumn(
+  modifier = Modifier.fillMaxSize().imePadding(),
+  contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+  verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+  item {
+      SettingsExpandableCard(
+          title = "API-подключения",
+          subtitle = if (state.apiProfiles.isEmpty()) "Подключения не добавлены" else "${state.apiProfiles.size} подключений",
+          initiallyExpanded = false,
+          stateKey = "api-profiles"
+      ) {
+          state.apiProfiles.forEach { profile ->
+              ApiProfileCard(
+                  profile = profile,
+                  onChange = vm::updateApiProfile,
+                  onSaveKey = { vm.saveApiProfileKey(profile.id, it) },
+                  onClearKey = { vm.clearApiProfileKey(profile.id) },
+                  onDelete = { vm.deleteApiProfile(profile.id) }
+              )
+              Divider(color = MaterialTheme.colorScheme.outlineVariant)
+          }
+          OutlinedButton(onClick = vm::addApiProfile, modifier = Modifier.fillMaxWidth()) {
+              Icon(Icons.Default.Add, null)
+              Spacer(Modifier.width(8.dp))
+              Text("Добавить API-подключение")
+          }
+      }
+  }
+
+  item {
+      SettingsExpandableCard(
+          title = "О приложении",
+          subtitle = "DisputeAI ${BuildConfig.VERSION_NAME}",
+          initiallyExpanded = false,
+          stateKey = "about-v13"
+      ) {
+          Text("Версия ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})", fontWeight = FontWeight.SemiBold)
+          OutlinedButton(
+              onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://github.com/Ayuemin/DisputeAI"))) },
+              modifier = Modifier.fillMaxWidth()
+          ) { Text("Репозиторий на GitHub") }
+          Text(
+              "API-ключи хранятся локально в зашифрованном виде; ключ шифрования защищён Android Keystore.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+          Text(
+              "Лицензия: GNU GPL v3.0 or later.",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+          Divider(color = MaterialTheme.colorScheme.outlineVariant)
+          BackgroundWorkSettings(showHeading = true)
+      }
+  }
+  item { Spacer(Modifier.navigationBarsPadding()) }
+        }
+    }
+}
+
+@Composable
+private fun ApiProfileCard(
+    profile: ApiProfile,
+    onChange: (ApiProfile) -> Unit,
+    onSaveKey: (String) -> Unit,
+    onClearKey: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var providerMenu by remember { mutableStateOf(false) }
+    var apiKey by remember(profile.id) { mutableStateOf("") }
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+  value = profile.name,
+  onValueChange = { onChange(profile.copy(name = it.take(60))) },
+  label = { Text("Название подключения") },
+  singleLine = true,
+  modifier = Modifier.fillMaxWidth()
         )
+        Box {
+  OutlinedButton(onClick = { providerMenu = true }, modifier = Modifier.fillMaxWidth()) {
+      Text(when (profile.provider) { "anthropic" -> "Anthropic"; "gemini" -> "Gemini"; else -> "OpenAI-совместимый API" })
+  }
+  DropdownMenu(expanded = providerMenu, onDismissRequest = { providerMenu = false }) {
+      listOf("openai" to "OpenAI-совместимый API", "anthropic" to "Anthropic", "gemini" to "Gemini").forEach { (id, label) ->
+          DropdownMenuItem(
+              text = { Text(label) },
+              onClick = { providerMenu = false; onChange(profile.copy(provider = id)) }
+          )
+      }
+  }
+        }
+        OutlinedTextField(
+  value = profile.baseUrl,
+  onValueChange = { onChange(profile.copy(baseUrl = it)) },
+  label = { Text("Base URL") },
+  placeholder = { Text("https://openrouter.ai/api/v1") },
+  singleLine = true,
+  modifier = Modifier.fillMaxWidth()
+        )
+        OutlinedTextField(
+  value = apiKey,
+  onValueChange = { apiKey = it },
+  label = { Text(if (profile.hasApiKey) "Новый API-ключ (необязательно)" else "API-ключ") },
+  visualTransformation = PasswordVisualTransformation(),
+  singleLine = true,
+  modifier = Modifier.fillMaxWidth()
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+  Button(
+      onClick = { if (apiKey.isNotBlank()) { onSaveKey(apiKey); apiKey = "" } },
+      enabled = apiKey.isNotBlank()
+  ) { Text("Сохранить ключ") }
+  if (profile.hasApiKey) TextButton(onClick = onClearKey) { Text("Удалить ключ") }
+  Spacer(Modifier.weight(1f))
+  TextButton(onClick = onDelete) { Text("Удалить подключение") }
+        }
     }
 }
 
@@ -762,6 +951,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
 @Composable
 private fun ModelSettingsCard(
     config: ModelConfig,
+    apiProfiles: List<ApiProfile>,
     capability: ModelCapability?,
     testState: ModelTestState?,
     canDelete: Boolean,
@@ -773,13 +963,12 @@ private fun ModelSettingsCard(
     onProbe: () -> Unit
 ) {
     val expanded = isSettingsModelExpanded(config.id)
-    var apiKey by remember(config.id) { mutableStateOf("") }
-    var providerMenu by remember { mutableStateOf(false) }
+    var apiProfileMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
     var colorPicker by remember { mutableStateOf(false) }
     var searchEngineMenu by remember { mutableStateOf(false) }
 
-    LaunchedEffect(config.baseUrl, config.model, config.provider) {
+    LaunchedEffect(config.apiProfileId, config.model) {
         if (config.model.isNotBlank()) {
             delay(650)
             onProbe()
@@ -804,7 +993,7 @@ private fun ModelSettingsCard(
                 Column(Modifier.weight(1f)) {
                     Text(config.name.ifBlank { "Модель" }, fontWeight = FontWeight.SemiBold)
                     Text(
-                        if (config.baseUrl.isNotBlank() && config.model.isNotBlank()) "Настроена${if (config.hasApiKey) " · ключ сохранён" else ""}" else "Не настроена",
+                        if (config.apiProfileId.isNotBlank() && config.model.isNotBlank()) "Настроена" else "Не настроена",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -831,40 +1020,31 @@ private fun ModelSettingsCard(
                         Switch(checked = config.enabled, onCheckedChange = { onChange(config.copy(enabled = it)) })
                     }
 
+                    val selectedApi = apiProfiles.firstOrNull { it.id == config.apiProfileId }
                     Box {
-                        OutlinedButton(onClick = { providerMenu = true }, modifier = Modifier.fillMaxWidth()) {
-                            Text(
-                                when (config.provider) {
-                                    "anthropic" -> "Anthropic"
-                                    "gemini" -> "Gemini"
-                                    else -> "OpenAI-совместимый API"
-                                }
-                            )
+                        OutlinedButton(onClick = { apiProfileMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                            Text(selectedApi?.name ?: "Выбрать API-подключение")
                         }
-                        DropdownMenu(expanded = providerMenu, onDismissRequest = { providerMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("OpenAI-совместимый API") },
-                                onClick = { providerMenu = false; onChange(config.copy(provider = "openai")) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Anthropic") },
-                                onClick = { providerMenu = false; onChange(config.copy(provider = "anthropic")) }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Gemini") },
-                                onClick = { providerMenu = false; onChange(config.copy(provider = "gemini")) }
-                            )
+                        DropdownMenu(expanded = apiProfileMenu, onDismissRequest = { apiProfileMenu = false }) {
+                            if (apiProfiles.isEmpty()) {
+                                DropdownMenuItem(
+                                    text = { Text("Добавьте API в «О приложении и API»") },
+                                    onClick = { apiProfileMenu = false }
+                                )
+                            } else {
+                                apiProfiles.forEach { profile ->
+                                    DropdownMenuItem(
+                                        text = { Text(profile.name) },
+                                        onClick = {
+                                            apiProfileMenu = false
+                                            onChange(config.copy(apiProfileId = profile.id))
+                                        }
+                                    )
+                                }
+                            }
                         }
                     }
 
-                    OutlinedTextField(
-                        value = config.baseUrl,
-                        onValueChange = { onChange(config.copy(baseUrl = it)) },
-                        label = { Text("Base URL") },
-                        placeholder = { Text("https://openrouter.ai/api/v1") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
                     OutlinedTextField(
                         value = config.model,
                         onValueChange = { onChange(config.copy(model = it)) },
@@ -872,21 +1052,6 @@ private fun ModelSettingsCard(
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth()
                     )
-                    OutlinedTextField(
-                        value = apiKey,
-                        onValueChange = { apiKey = it },
-                        label = { Text(if (config.hasApiKey) "Новый API-ключ (необязательно)" else "API-ключ") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { if (apiKey.isNotBlank()) { onSaveKey(apiKey); apiKey = "" } },
-                            enabled = apiKey.isNotBlank()
-                        ) { Text("Сохранить ключ") }
-                        if (config.hasApiKey) TextButton(onClick = onClearKey) { Text("Удалить ключ") }
-                    }
 
                     OutlinedTextField(
                         value = config.systemPrompt,
@@ -924,7 +1089,7 @@ private fun ModelSettingsCard(
                         TextButton(onClick = { colorPicker = true }) { Text("Палитра") }
                     }
 
-                    val openRouter = config.provider == "openai" && config.baseUrl.contains("openrouter.ai", ignoreCase = true)
+                    val openRouter = selectedApi?.provider == "openai" && selectedApi.baseUrl.contains("openrouter.ai", ignoreCase = true)
                     if (openRouter) {
                         Divider()
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

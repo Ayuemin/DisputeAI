@@ -218,7 +218,7 @@ fun ModernGeneralSettings(
 
     SettingsExpandableCard(
         title = "Параметры дискуссии",
-        subtitle = "Циклы, промпты и контекст результата",
+        subtitle = "Циклы, промпты и контекст",
         initiallyExpanded = false,
         stateKey = "discussion-parameters"
     ) {
@@ -254,6 +254,45 @@ fun ModernGeneralSettings(
                 onValueChange = { onChange(g.copy(laterCyclesPrompt = it)) },
                 onReset = { onChange(g.copy(laterCyclesPrompt = DEFAULT_LATER_CYCLES_PROMPT)) }
             )
+        }
+
+        SettingsExpandableCard(
+            title = "Контекст участников",
+            subtitle = if (g.discussionUseAllCycles) "Все циклы текущей дискуссии" else "Первый цикл + последние ${g.discussionContextCycles}",
+            initiallyExpanded = false,
+            stateKey = "discussion-participant-context"
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Использовать все циклы")
+                    Text(
+                        "Относится только к моделям-участникам, не к модели результата.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = g.discussionUseAllCycles,
+                    onCheckedChange = { onChange(g.copy(discussionUseAllCycles = it)) }
+                )
+            }
+
+            if (g.discussionUseAllCycles) {
+                Text(
+                    "Участники видят все завершённые циклы только текущей дискуссии и все реплики пользователя в ней.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                ModernNumberSetting("Последних циклов для участников", g.discussionContextCycles, 1, 100) {
+                    onChange(g.copy(discussionContextCycles = it))
+                }
+                Text(
+                    "Первый независимый цикл сохраняется всегда. К нему добавляются последние выбранные циклы и все реплики пользователя текущей дискуссии. Другие дискуссии этого чата в контекст не попадают.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
 
         SettingsExpandableCard(

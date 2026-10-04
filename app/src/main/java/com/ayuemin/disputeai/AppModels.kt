@@ -2,6 +2,14 @@ package com.ayuemin.disputeai
 
 import java.util.UUID
 
+data class ApiProfile(
+    val id: String,
+    val name: String,
+    val provider: String = "openai",
+    val baseUrl: String = "",
+    val hasApiKey: Boolean = false
+)
+
 data class ModelConfig(
     val id: String,
     val name: String,
@@ -10,6 +18,7 @@ data class ModelConfig(
     val baseUrl: String = "",
     val model: String = "",
     val hasApiKey: Boolean = false,
+    val apiProfileId: String = "",
     val systemPrompt: String = DEFAULT_PARTICIPANT_PROMPT,
     val temperatureEnabled: Boolean = false,
     val temperature: Double = 0.8,
@@ -26,6 +35,8 @@ data class ModelConfig(
 data class GeneralSettings(
     val rounds: Int = 10,
     val firstModelId: String = "m1",
+    val discussionContextCycles: Int = 3,
+    val discussionUseAllCycles: Boolean = false,
     val resultContextCycles: Int = 3,
     val resultUseAllCycles: Boolean = false,
     val firstCyclePrompt: String = DEFAULT_FIRST_CYCLE_PROMPT,
@@ -83,7 +94,8 @@ data class ChatSession(
     val updatedAt: Long = System.currentTimeMillis(),
     val messages: List<ChatMessage> = emptyList(),
     val attachments: List<AttachmentMeta> = emptyList(),
-    val discussionFinished: Boolean = false
+    val discussionFinished: Boolean = false,
+    val settings: AppSettings = AppSettings()
 )
 
 enum class RunMode { IDLE, RUNNING, PAUSED }
@@ -104,6 +116,7 @@ data class UiState(
     val run: RunProgress = RunProgress(),
     val capabilities: Map<String, ModelCapability> = emptyMap(),
     val modelTests: Map<String, ModelTestState> = emptyMap(),
+    val apiProfiles: List<ApiProfile> = emptyList(),
     val notice: String? = null
 ) {
     val activeChat: ChatSession?

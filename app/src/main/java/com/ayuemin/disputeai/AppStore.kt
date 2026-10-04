@@ -18,6 +18,44 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         prefs.edit().putString("settings", settingsToJson(settings).toString()).apply()
     }
 
+    fun loadApiProfiles(): List<ApiProfile> {
+        val raw = prefs.getString("api_profiles_v13", null) ?: return emptyList()
+        return try {
+            val arr = JSONArray(raw)
+            buildList {
+                for (i in 0 until arr.length()) {
+                    val o = arr.getJSONObject(i)
+                    val id = o.optString("id")
+                    if (id.isNotBlank()) {
+                        add(
+                            ApiProfile(
+                                id = id,
+                                name = o.optString("name", "API"),
+                                provider = o.optString("provider", "openai"),
+                                baseUrl = o.optString("baseUrl", ""),
+                                hasApiKey = secrets.has(id)
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) { emptyList() }
+    }
+
+    fun saveApiProfiles(profiles: List<ApiProfile>) {
+        val arr = JSONArray()
+        profiles.forEach { p ->
+            arr.put(
+                JSONObject()
+                    .put("id", p.id)
+                    .put("name", p.name)
+                    .put("provider", p.provider)
+                    .put("baseUrl", p.baseUrl)
+            )
+        }
+        prefs.edit().putString("api_profiles_v13", arr.toString()).apply()
+    }
+
     fun loadChats(): List<ChatSession> {
         if (!chatsFile.exists()) return emptyList()
         return try {
@@ -49,6 +87,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         put("general", JSONObject().apply {
             put("rounds", settings.general.rounds)
             put("firstModelId", settings.general.firstModelId)
+            put("discussionContextCycles", settings.general.discussionContextCycles)
+            put("discussionUseAllCycles", settings.general.discussionUseAllCycles)
             put("resultContextCycles", settings.general.resultContextCycles)
             put("resultUseAllCycles", settings.general.resultUseAllCycles)
             put("firstCyclePrompt", settings.general.firstCyclePrompt)
@@ -70,6 +110,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         val general = GeneralSettings(
             rounds = g?.optInt("rounds", 10)?.coerceIn(1, 100) ?: 10,
             firstModelId = g?.optString("firstModelId", participants.first().id).orEmpty().ifBlank { participants.first().id },
+            discussionContextCycles = g?.optInt("discussionContextCycles", 3)?.coerceIn(1, 100) ?: 3,
+            discussionUseAllCycles = g?.optBoolean("discussionUseAllCycles", false) ?: false,
             resultContextCycles = g?.optInt("resultContextCycles", 3)?.coerceIn(1, 100) ?: 3,
             resultUseAllCycles = g?.optBoolean("resultUseAllCycles", false) ?: false,
             firstCyclePrompt = g?.optString("firstCyclePrompt", DEFAULT_FIRST_CYCLE_PROMPT).orEmpty().ifBlank { DEFAULT_FIRST_CYCLE_PROMPT },
@@ -85,7 +127,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         put("provider", m.provider)
         put("baseUrl", m.baseUrl)
         put("model", m.model)
-        put("hasApiKey", secrets.has(m.id))
+        put("hasApiKey", false)
+        put("apiProfileId", m.apiProfileId)
         put("systemPrompt", m.systemPrompt)
         put("temperatureEnabled", m.temperatureEnabled)
         put("temperature", m.temperature)
@@ -111,7 +154,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             provider = o.optString("provider", "openai"),
             baseUrl = o.optString("baseUrl", ""),
             model = o.optString("model", ""),
-            hasApiKey = secrets.has(id),
+            hasApiKey = false,
+            apiProfileId = o.optString("apiProfileId", ""),
             systemPrompt = o.optString("systemPrompt", if (result) DEFAULT_RESULT_PROMPT else DEFAULT_PARTICIPANT_PROMPT),
             temperatureEnabled = o.optBoolean("temperatureEnabled", false),
             temperature = o.optDouble("temperature", 0.8).coerceIn(0.0, 2.0),
@@ -134,6 +178,7 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
         put("createdAt", c.createdAt)
         put("updatedAt", c.updatedAt)
         put("discussionFinished", c.discussionFinished)
+        put("settings", settingsToJson(c.settings))
         put("attachments", JSONArray().apply { c.attachments.forEach { a ->
             put(JSONObject().apply {
                 put("id", a.id); put("name", a.name); put("mime", a.mime); put("size", a.size); put("path", a.path)
@@ -178,7 +223,8 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             id = o.optString("id"), title = o.optString("title", "Новый чат"), titleIsManual = o.optBoolean("titleIsManual", false),
             pinned = o.optBoolean("pinned"), createdAt = o.optLong("createdAt", System.currentTimeMillis()),
             updatedAt = o.optLong("updatedAt", System.currentTimeMillis()), messages = messages,
-            attachments = attachments, discussionFinished = o.optBoolean("discussionFinished", false)
+            attachments = attachments, discussionFinished = o.optBoolean("discussionFinished", false),
+            settings = o.optJSONObject("settings")?.let { settingsFromJson(it) } ?: AppSettings()
         )
     }
 }

@@ -38,15 +38,23 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         RegexOption.IGNORE_CASE
     )
 
+    private val loadedChats = store.loadChats()
     private val _state = MutableStateFlow(
-        UiState(settings = store.loadSettings(), chats = store.loadChats())
+        UiState(
+            settings = loadedChats.firstOrNull()?.settings ?: AppSettings(),
+            chats = loadedChats,
+            apiProfiles = store.loadApiProfiles()
+        )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
-        if (_state.value.chats.isEmpty()) newChat()
-        else if (_state.value.activeChatId == null) {
-            _state.value = _state.value.copy(activeChatId = sortedChats(_state.value.chats).firstOrNull()?.id)
+        if (_state.value.chats.isEmpty()) {
+            newChat()
+        } else {
+            val id = sortedChats(_state.value.chats).first().id
+            val active = _state.value.chats.first { it.id == id }
+            _state.value = _state.value.copy(activeChatId = id, settings = active.settings)
         }
         refreshKeyFlags()
     }
@@ -55,31 +63,51 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         chats.sortedWith(compareByDescending<ChatSession> { it.pinned }.thenByDescending { it.updatedAt })
 
     private fun persistChats(chats: List<ChatSession> = _state.value.chats) = store.saveChats(chats)
-    private fun persistSettings(settings: AppSettings = _state.value.settings) = store.saveSettings(settings)
+    private fun persistSettings(settings: AppSettings = _state.value.settings) {
+        val id = _state.value.activeChatId ?: return
+        val chats = _state.value.chats.map { chat ->
+            if (chat.id == id) chat.copy(settings = settings, updatedAt = System.currentTimeMillis()) else chat
+        }
+        _state.value = _state.value.copy(chats = chats, settings = settings)
+        persistChats(chats)
+    }
+
+    private fun persistApiProfiles(profiles: List<ApiProfile> = _state.value.apiProfiles) = store.saveApiProfiles(profiles)
 
     private fun refreshKeyFlags() {
-        val s = _state.value.settings
-        val participants = s.participants.map { it.copy(hasApiKey = secrets.has(it.id)) }
-        val result = s.resultModel.copy(hasApiKey = secrets.has(s.resultModel.id))
-        _state.value = _state.value.copy(settings = s.copy(participants = participants, resultModel = result))
+        val profiles = _state.value.apiProfiles.map { it.copy(hasApiKey = secrets.has(it.id)) }
+        _state.value = _state.value.copy(apiProfiles = profiles)
     }
 
     fun consumeNotice() { _state.value = _state.value.copy(notice = null) }
     private fun notice(text: String) { _state.value = _state.value.copy(notice = text) }
 
+    override fun onCleared() {
+        DiscussionForegroundService.stop(getApplication())
+        super.onCleared()
+    }
+
     fun newChat() {
         resultToken.incrementAndGet()
         stopCycle(markFinished = false)
-        val chat = ChatSession()
+        val chat = ChatSession(settings = AppSettings())
         val chats = listOf(chat) + _state.value.chats
-        _state.value = _state.value.copy(chats = chats, activeChatId = chat.id, pendingAttachments = emptyList())
+        _state.value = _state.value.copy(chats = chats, activeChatId = chat.id, settings = chat.settings, pendingAttachments = emptyList(), capabilities = emptyMap(), modelTests = emptyMap())
         persistChats(chats)
     }
 
     fun selectChat(id: String) {
         resultToken.incrementAndGet()
         if (_state.value.run.mode != RunMode.IDLE) stopCycle(markFinished = true)
-        _state.value = _state.value.copy(activeChatId = id, pendingAttachments = emptyList())
+        val target = _state.value.chats.firstOrNull { it.id == id } ?: return
+        DiscussionForegroundService.stop(getApplication())
+        _state.value = _state.value.copy(
+            activeChatId = id,
+            settings = target.settings,
+            pendingAttachments = emptyList(),
+            capabilities = emptyMap(),
+            modelTests = emptyMap()
+        )
     }
 
     fun pinChat(id: String, pinned: Boolean) = updateChat(id) { it.copy(pinned = pinned, updatedAt = System.currentTimeMillis()) }
@@ -92,18 +120,22 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun deleteChat(id: String) {
-        resultToken.incrementAndGet()
         val target = _state.value.chats.firstOrNull { it.id == id } ?: return
-        if (_state.value.activeChatId == id && _state.value.run.mode != RunMode.IDLE) stopCycle(markFinished = false)
+        if (_state.value.activeChatId == id) {
+            resultToken.incrementAndGet()
+            if (_state.value.run.mode != RunMode.IDLE) stopCycle(markFinished = false)
+            else DiscussionForegroundService.stop(getApplication())
+        }
         target.attachments.forEach { runCatching { File(it.path).delete() } }
         var chats = _state.value.chats.filterNot { it.id == id }
         if (chats.isEmpty()) {
             val fresh = ChatSession()
             chats = listOf(fresh)
-            _state.value = _state.value.copy(chats = chats, activeChatId = fresh.id, pendingAttachments = emptyList())
+            _state.value = _state.value.copy(chats = chats, activeChatId = fresh.id, settings = fresh.settings, pendingAttachments = emptyList(), capabilities = emptyMap(), modelTests = emptyMap())
         } else {
             val next = if (_state.value.activeChatId == id) sortedChats(chats).first().id else _state.value.activeChatId
-            _state.value = _state.value.copy(chats = chats, activeChatId = next, pendingAttachments = emptyList())
+            val nextSettings = chats.firstOrNull { it.id == next }?.settings ?: AppSettings()
+            _state.value = _state.value.copy(chats = chats, activeChatId = next, settings = nextSettings, pendingAttachments = emptyList(), capabilities = emptyMap(), modelTests = emptyMap())
         }
         persistChats(chats)
     }
@@ -127,7 +159,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val next = s.copy(participants = updated, general = s.general.copy(firstModelId = first))
         var caps = _state.value.capabilities
         var tests = _state.value.modelTests
-        if (previous == null || previous.baseUrl != config.baseUrl || previous.model != config.model || previous.provider != config.provider) {
+        if (previous == null || previous.apiProfileId != config.apiProfileId || previous.model != config.model) {
             caps = caps - config.id
             tests = tests - config.id
         }
@@ -169,7 +201,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val next = s.copy(resultModel = config.copy(hasApiKey = secrets.has(config.id)))
         var caps = _state.value.capabilities
         var tests = _state.value.modelTests
-        if (previous.baseUrl != config.baseUrl || previous.model != config.model || previous.provider != config.provider) {
+        if (previous.apiProfileId != config.apiProfileId || previous.model != config.model) {
             caps = caps - config.id
             tests = tests - config.id
         }
@@ -199,6 +231,77 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         persistSettings()
         notice("API-ключ удалён")
     }
+
+    fun addApiProfile() {
+        val n = _state.value.apiProfiles.size + 1
+        val profile = ApiProfile(
+            id = "api_" + UUID.randomUUID().toString().take(10),
+            name = "Подключение $n"
+        )
+        val profiles = _state.value.apiProfiles + profile
+        _state.value = _state.value.copy(apiProfiles = profiles)
+        persistApiProfiles(profiles)
+    }
+
+    fun updateApiProfile(profile: ApiProfile) {
+        val profiles = _state.value.apiProfiles.map {
+            if (it.id == profile.id) profile.copy(hasApiKey = secrets.has(profile.id)) else it
+        }
+        _state.value = _state.value.copy(apiProfiles = profiles, capabilities = emptyMap(), modelTests = emptyMap())
+        persistApiProfiles(profiles)
+    }
+
+    fun saveApiProfileKey(id: String, key: String) {
+        val clean = key.trim()
+        if (clean.isBlank()) return
+        secrets.put(id, clean)
+        refreshKeyFlags()
+        notice("API-ключ сохранён в Android Keystore")
+    }
+
+    fun clearApiProfileKey(id: String) {
+        secrets.remove(id)
+        refreshKeyFlags()
+        notice("API-ключ удалён")
+    }
+
+    fun deleteApiProfile(id: String) {
+        val inUse = _state.value.chats.any { chat ->
+            chat.settings.participants.any { it.apiProfileId == id } || chat.settings.resultModel.apiProfileId == id
+        }
+        if (inUse) {
+            notice("Подключение используется в настройках одного из чатов")
+            return
+        }
+        secrets.remove(id)
+        val profiles = _state.value.apiProfiles.filterNot { it.id == id }
+        _state.value = _state.value.copy(apiProfiles = profiles)
+        persistApiProfiles(profiles)
+    }
+
+    fun clearActiveDiscussion() {
+        resultToken.incrementAndGet()
+        stopCycle(markFinished = false)
+        val id = _state.value.activeChatId ?: return
+        val chat = _state.value.chats.firstOrNull { it.id == id } ?: return
+        chat.attachments.forEach { runCatching { File(it.path).delete() } }
+        updateChat(id) { current ->
+            current.copy(
+                messages = emptyList(),
+                attachments = emptyList(),
+                discussionFinished = false,
+                updatedAt = System.currentTimeMillis()
+            )
+        }
+        _state.value = _state.value.copy(pendingAttachments = emptyList())
+        notice("Дискуссия очищена. Настройки чата сохранены.")
+    }
+
+    private fun apiProfileFor(model: ModelConfig): ApiProfile? =
+        _state.value.apiProfiles.firstOrNull { it.id == model.apiProfileId }
+
+    private fun isModelConfigured(model: ModelConfig): Boolean =
+        model.model.isNotBlank() && apiProfileFor(model)?.baseUrl?.isNotBlank() == true
 
     fun resetSettings() {
         resultToken.incrementAndGet()
@@ -233,7 +336,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun testModel(modelId: String) {
         val model = findModel(modelId) ?: return
-        if (model.baseUrl.isBlank() || model.model.isBlank()) {
+        if (!isModelConfigured(model)) {
             _state.value = _state.value.copy(
                 modelTests = _state.value.modelTests + (modelId to ModelTestState(success = false, message = "Укажите адрес API и ID модели"))
             )
@@ -345,6 +448,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         runToken.incrementAndGet()
         val id = _state.value.activeChatId
         _state.value = _state.value.copy(run = RunProgress())
+        DiscussionForegroundService.stop(getApplication())
         if (id != null) {
             updateChat(id) { chat ->
                 chat.copy(
@@ -379,7 +483,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun readyParticipants(): List<ModelConfig> = _state.value.settings.participants.filter {
-        it.enabled && it.baseUrl.isNotBlank() && it.model.isNotBlank()
+        it.enabled && isModelConfigured(it)
     }
 
     private fun startCycle(discussionId: String) {
@@ -389,6 +493,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(
             run = RunProgress(mode = RunMode.RUNNING, cycle = 1, discussionId = discussionId)
         )
+        DiscussionForegroundService.start(getApplication(), "Идёт дискуссия · цикл 1")
         viewModelScope.launch(Dispatchers.IO) { runDiscussion(token, models, discussionId) }
     }
 
@@ -397,16 +502,11 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val firstIndex = baseModels.indexOfFirst { it.id == general.firstModelId }.let { if (it < 0) 0 else it }
         val models = baseModels.drop(firstIndex) + baseModels.take(firstIndex)
         val states = models.associate { it.id to ParticipationState.ACTIVE }.toMutableMap()
-        val baselineIds = _state.value.activeChat
-            ?.messages
-            ?.filterNot { it.inProgress }
-            ?.map { it.id }
-            ?.toSet()
-            .orEmpty()
         var knownUserMessages = discussionUserMessageCount(discussionId)
         var discussionComplete = false
 
         for (cycle in 1..general.rounds) {
+            DiscussionForegroundService.update(getApplication(), "Идёт дискуссия · цикл $cycle")
             var activeAtCycleStart = models.filter { states[it.id] != ParticipationState.DONE }
             if (activeAtCycleStart.isEmpty()) break
             var soloModelId = if (cycle > 1 && activeAtCycleStart.size == 1 && states[activeAtCycleStart.first().id] == ParticipationState.ACTIVE) {
@@ -438,18 +538,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                 }
 
                 val chat = _state.value.activeChat ?: return
-                val contextChat = if (cycle == 1) {
-                    chat.copy(
-                        messages = chat.messages.filter { message ->
-                            !message.inProgress && (
-                                message.id in baselineIds ||
-                                    (message.authorId == "user" && message.discussionId == discussionId)
-                                )
-                        }
-                    )
-                } else {
-                    chat
-                }
+                val contextChat = discussionContextChat(chat, discussionId, cycle)
                 val chatId = chat.id
                 val messageId = withContext(Dispatchers.Main) {
                     _state.value = _state.value.copy(
@@ -529,8 +618,42 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                     updatedAt = System.currentTimeMillis()
                 )
             }
+            DiscussionForegroundService.stop(getApplication())
             if (discussionComplete) notice("Обсуждение завершено: существенных новых возражений не осталось.")
         }
+    }
+
+    private fun discussionContextChat(chat: ChatSession, discussionId: String, cycle: Int): ChatSession {
+        val g = _state.value.settings.general
+        val scoped = chat.messages.filter {
+            !it.inProgress && !it.isResult && it.discussionId == discussionId
+        }
+
+        val selected = if (cycle <= 1) {
+            scoped.filter { it.authorId == "user" }
+        } else {
+            val maxCycle = scoped.mapNotNull { it.cycle }.maxOrNull() ?: 1
+            val minRecentCycle = if (g.discussionUseAllCycles) {
+                2
+            } else {
+                (maxCycle - g.discussionContextCycles + 1).coerceAtLeast(2)
+            }
+            scoped.filter { message ->
+                when {
+                    message.authorId == "user" -> true
+                    message.cycle == null -> false
+                    message.cycle == 1 -> true
+                    g.discussionUseAllCycles -> true
+                    else -> message.cycle >= minRecentCycle
+                }
+            }
+        }
+
+        val attachmentIds = selected.flatMap { it.attachmentIds }.toSet()
+        return chat.copy(
+            messages = selected,
+            attachments = chat.attachments.filter { it.id in attachmentIds }
+        )
     }
 
     private fun discussionUserMessageCount(discussionId: String): Int =
@@ -587,8 +710,8 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
 
     fun generateResult() {
         val model = _state.value.settings.resultModel
-        if (model.baseUrl.isBlank() || model.model.isBlank()) {
-            notice("Настройте модель результата в настройках")
+        if (!isModelConfigured(model)) {
+            notice("Настройте модель результата в настройках чата")
             return
         }
         val chat = _state.value.activeChat ?: return
@@ -598,6 +721,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
             .firstOrNull { !it.isResult && !it.error && !it.inProgress && it.discussionId != null }
             ?.discussionId
         val token = resultToken.incrementAndGet()
+        DiscussionForegroundService.start(getApplication(), "Формируется итоговый результат")
         val chatId = chat.id
         val messageId = appendProgressMessage(chatId, model, null, isResult = true, discussionId = discussionId)
         viewModelScope.launch(Dispatchers.IO) {
@@ -614,6 +738,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                     removeProgressMessage(chatId, messageId)
                     notice(result.optString("error", "Не удалось получить результат"))
                 }
+                DiscussionForegroundService.stop(getApplication())
             }
         }
     }
@@ -628,7 +753,7 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val scoped = if (discussionId == null) {
             chat.messages.filterNot { it.inProgress }
         } else {
-            chat.messages.filter { !it.inProgress && (it.authorId == "user" || it.discussionId == discussionId) }
+            chat.messages.filter { !it.inProgress && it.discussionId == discussionId }
         }
         val maxCycle = scoped
             .filter { discussionId == null || it.discussionId == discussionId }
@@ -645,7 +770,12 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                 else -> m.cycle >= minCycle
             }
         }
-        return askModel(model, chat.copy(messages = selected), resultMode = true, onProgress = onProgress)
+        val attachmentIds = selected.flatMap { it.attachmentIds }.toSet()
+        val contextChat = chat.copy(
+            messages = selected,
+            attachments = chat.attachments.filter { it.id in attachmentIds }
+        )
+        return askModel(model, contextChat, resultMode = true, onProgress = onProgress)
     }
 
     private fun askModel(
@@ -714,10 +844,11 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun slotJson(model: ModelConfig, system: String): JSONObject = JSONObject().apply {
-        put("provider", model.provider)
-        put("baseUrl", model.baseUrl.trim())
+        val profile = apiProfileFor(model)
+        put("provider", profile?.provider ?: model.provider)
+        put("baseUrl", profile?.baseUrl?.trim().orEmpty())
         put("model", model.model.trim())
-        put("apiKey", secrets.get(model.id))
+        put("apiKey", profile?.id?.let(secrets::get).orEmpty())
         put("system", system)
         put("temperatureEnabled", model.temperatureEnabled)
         put("temperature", model.temperature)
