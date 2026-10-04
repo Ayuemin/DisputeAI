@@ -26,10 +26,13 @@ object StreamingLlmApi {
         if (slot.optString("provider", "openai") != "openai") {
             return LlmApi.call(slot, messagesJson, false)
         }
+        val messages = JSONArray(messagesJson)
         return try {
-            openAiStream(slot, JSONArray(messagesJson), onDelta)
-        } catch (e: StreamUnsupportedException) {
-            LlmApi.call(slot, messagesJson, false)
+            openAiStream(slot, messages, onDelta)
+        } catch (_: StreamUnsupportedException) {
+            // Keep the exact same request features (including OpenRouter web search)
+            // when an endpoint does not support SSE streaming.
+            openAiNonStream(slot, messages, onDelta)
         }
     }
 
@@ -92,6 +95,44 @@ object StreamingLlmApi {
         }
     }
 
+    private fun openAiNonStream(
+        slot: JSONObject,
+        messages: JSONArray,
+        onDelta: (String) -> Unit
+    ): JSONObject {
+        val base = trimSlash(slot.optString("baseUrl", ""))
+        val endpoint = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+        val body = openAiBody(slot, messages, stream = false)
+        val key = slot.optString("apiKey", "")
+        validateEndpoint(endpoint, key)
+
+        val c = URL(endpoint).openConnection() as HttpURLConnection
+        val timeout = slot.optInt("timeoutSec", 180).coerceIn(10, 600) * 1000
+        c.connectTimeout = minOf(timeout, 60_000)
+        c.readTimeout = timeout
+        c.instanceFollowRedirects = false
+        c.requestMethod = "POST"
+        c.setRequestProperty("Content-Type", "application/json; charset=utf-8")
+        c.setRequestProperty("Accept", "application/json")
+        c.useCaches = false
+        c.doOutput = true
+        if (key.isNotEmpty()) c.setRequestProperty("Authorization", "Bearer $key")
+
+        val bytes = body.toString().toByteArray(StandardCharsets.UTF_8)
+        c.setFixedLengthStreamingMode(bytes.size)
+        c.outputStream.use { it.write(bytes) }
+
+        val code = c.responseCode
+        if (code in 300..399) {
+            c.disconnect()
+            throw Exception("HTTP $code: перенаправление API заблокировано. Проверьте базовый адрес.")
+        }
+        val raw = readAll(if (code in 200..299) c.inputStream else c.errorStream)
+        c.disconnect()
+        if (code !in 200..299) throw Exception("HTTP $code: ${safeBody(raw)}")
+        return parseOpenAiJson(JSONObject(raw), onDelta)
+    }
+
     private fun openAiBody(slot: JSONObject, messages: JSONArray, stream: Boolean): JSONObject = JSONObject().apply {
         put("model", slot.optString("model"))
         val all = JSONArray()
@@ -107,13 +148,12 @@ object StreamingLlmApi {
             val engine = slot.optString("webSearchEngine", "auto").lowercase(Locale.ROOT).let {
                 if (it in setOf("auto", "native", "exa", "parallel", "perplexity")) it else "auto"
             }
-            val parameters = JSONObject().put("engine", engine)
             put(
                 "tools",
                 JSONArray().put(
                     JSONObject()
                         .put("type", "openrouter:web_search")
-                        .put("parameters", parameters)
+                        .put("parameters", JSONObject().put("engine", engine))
                 )
             )
             put("max_tool_calls", slot.optInt("webSearchMaxCalls", 2).coerceIn(1, 100))
@@ -155,8 +195,7 @@ object StreamingLlmApi {
                 chunk.optJSONObject("usage")?.let { usage = it }
                 val choice = chunk.optJSONArray("choices")?.optJSONObject(0) ?: return@forEach
                 choice.optString("finish_reason").takeIf { it.isNotBlank() && it != "null" }?.let { finishReason = it }
-                val delta = choice.optJSONObject("delta")
-                val part = extractText(delta?.opt("content")).orEmpty()
+                val part = extractText(choice.optJSONObject("delta")?.opt("content")).orEmpty()
                 if (part.isNotEmpty()) {
                     text.append(part)
                     onDelta(part)
