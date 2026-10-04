@@ -27,7 +27,7 @@ data class GeneralSettings(
     val rounds: Int = 10,
     val firstModelId: String = "m1",
     val resultContextCycles: Int = 3,
-    val resultUseAllCycles: Boolean = false,
+    val resultUseAllCycles: Boolean = true,
     val firstCyclePrompt: String = DEFAULT_FIRST_CYCLE_PROMPT,
     val laterCyclesPrompt: String = DEFAULT_LATER_CYCLES_PROMPT
 )
