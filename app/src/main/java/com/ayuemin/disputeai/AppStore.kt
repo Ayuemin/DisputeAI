@@ -71,7 +71,7 @@ class AppStore(private val context: Context, private val secrets: SecretStore) {
             rounds = g?.optInt("rounds", 10)?.coerceIn(1, 100) ?: 10,
             firstModelId = g?.optString("firstModelId", participants.first().id).orEmpty().ifBlank { participants.first().id },
             resultContextCycles = g?.optInt("resultContextCycles", 3)?.coerceIn(1, 100) ?: 3,
-            resultUseAllCycles = g?.optBoolean("resultUseAllCycles", true) ?: true,
+            resultUseAllCycles = g?.optBoolean("resultUseAllCycles", false) ?: false,
             firstCyclePrompt = g?.optString("firstCyclePrompt", DEFAULT_FIRST_CYCLE_PROMPT).orEmpty().ifBlank { DEFAULT_FIRST_CYCLE_PROMPT },
             laterCyclesPrompt = g?.optString("laterCyclesPrompt", DEFAULT_LATER_CYCLES_PROMPT).orEmpty().ifBlank { DEFAULT_LATER_CYCLES_PROMPT }
         )
