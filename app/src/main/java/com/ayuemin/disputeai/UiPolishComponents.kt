@@ -1,5 +1,7 @@
 package com.ayuemin.disputeai
 
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -44,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 
@@ -159,62 +162,32 @@ fun PendingAttachmentsSummary(
 @Composable
 fun ModernGeneralSettings(
     settings: AppSettings,
-    onChange: (GeneralSettings) -> Unit,
-    onReset: () -> Unit
+    onChange: (GeneralSettings) -> Unit
 ) {
     val g = settings.general
-    var firstMenu by remember { mutableStateOf(false) }
+    val firstName = settings.participants.firstOrNull { it.id == g.firstModelId }?.name
+        ?: settings.participants.firstOrNull()?.name.orEmpty()
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        SettingsClusterCard(
-            title = "Дискуссия",
-            subtitle = "Циклы и порядок участников",
-            initiallyExpanded = true
+    SettingsExpandableCard(
+        title = "Параметры дискуссии",
+        subtitle = "Циклы, промпты и контекст результата",
+        initiallyExpanded = true,
+        stateKey = "discussion-parameters"
+    ) {
+        SettingsExpandableCard(
+            title = "Циклы и порядок участников",
+            subtitle = "До ${g.rounds} циклов · первым: $firstName",
+            initiallyExpanded = true,
+            stateKey = "discussion-cycles"
         ) {
-            ModernNumberSetting("Максимальное количество циклов", g.rounds, 1, 100) {
-                onChange(g.copy(rounds = it))
-            }
-            Text(
-                "Это верхний предел: дискуссия может завершиться раньше, если модели закончили спор.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Column {
-                Text("Кто отвечает первым", style = MaterialTheme.typography.labelLarge)
-                androidx.compose.foundation.layout.Box {
-                    OutlinedButton(onClick = { firstMenu = true }, modifier = Modifier.fillMaxWidth()) {
-                        val selected = settings.participants.firstOrNull { it.id == g.firstModelId }
-                            ?: settings.participants.first()
-                        Text(selected.name)
-                    }
-                    DropdownMenu(expanded = firstMenu, onDismissRequest = { firstMenu = false }) {
-                        settings.participants.filter { it.enabled }.forEach { model ->
-                            DropdownMenuItem(
-                                text = { Text(model.name) },
-                                onClick = {
-                                    firstMenu = false
-                                    onChange(g.copy(firstModelId = model.id))
-                                }
-                            )
-                        }
-                    }
-                }
-            }
+            DiscussionCycleSettings(settings = settings, onChange = onChange)
         }
 
-        SettingsClusterCard(
-            title = "Работа в фоне",
-            subtitle = "Батарея и системные ограничения",
-            initiallyExpanded = false
-        ) {
-            BackgroundWorkSettings(showHeading = false)
-        }
-
-        SettingsClusterCard(
-            title = "Промпты дискуссии",
+        SettingsExpandableCard(
+            title = "Промпты циклов",
             subtitle = "Правила первого и последующих циклов",
-            initiallyExpanded = false
+            initiallyExpanded = false,
+            stateKey = "discussion-prompts"
         ) {
             Text(
                 "В первом цикле модели отвечают независимо. Со второго они видят завершённые ответы и переходят к критике и улучшению.",
@@ -235,10 +208,11 @@ fun ModernGeneralSettings(
             )
         }
 
-        SettingsClusterCard(
+        SettingsExpandableCard(
             title = "Контекст результата",
-            subtitle = if (g.resultUseAllCycles) "Вся дискуссия" else "Первый цикл + последние ${g.resultContextCycles}",
-            initiallyExpanded = false
+            subtitle = if (g.resultUseAllCycles) "Вся дискуссия · последние циклы: ${g.resultContextCycles}" else "Первый цикл + последние ${g.resultContextCycles}",
+            initiallyExpanded = false,
+            stateKey = "discussion-result-context"
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -254,41 +228,125 @@ fun ModernGeneralSettings(
                     onCheckedChange = { onChange(g.copy(resultUseAllCycles = it)) }
                 )
             }
-            if (!g.resultUseAllCycles) {
-                ModernNumberSetting("Последних циклов для результата", g.resultContextCycles, 1, 100) {
-                    onChange(g.copy(resultContextCycles = it))
-                }
-            }
-        }
 
-        SettingsClusterCard(
-            title = "Сброс настроек",
-            subtitle = "Вернуть параметры приложения по умолчанию",
-            initiallyExpanded = false
-        ) {
+            ModernNumberSetting("Последних циклов для результата", g.resultContextCycles, 1, 100) {
+                onChange(g.copy(resultContextCycles = it))
+            }
             Text(
-                "История чатов и вложения останутся, но настройки моделей и сохранённые API-ключи будут сброшены.",
+                if (g.resultUseAllCycles) {
+                    "Сейчас используется вся дискуссия. Значение выше сохраняется и применяется, если этот режим выключить."
+                } else {
+                    "Независимый первый цикл сохраняется в контексте отдельно, к нему добавляются последние выбранные циклы."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-            OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth()) {
-                Icon(Icons.Default.Refresh, null)
-                Spacer(Modifier.width(8.dp))
-                Text("Сбросить настройки")
+        }
+    }
+}
+
+@Composable
+private fun DiscussionCycleSettings(
+    settings: AppSettings,
+    onChange: (GeneralSettings) -> Unit
+) {
+    val g = settings.general
+    var firstMenu by remember { mutableStateOf(false) }
+
+    ModernNumberSetting("Максимальное количество циклов", g.rounds, 1, 100) {
+        onChange(g.copy(rounds = it))
+    }
+    Text(
+        "Это верхний предел: дискуссия может завершиться раньше, если модели закончили спор.",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
+
+    Column {
+        Text("Кто отвечает первым", style = MaterialTheme.typography.labelLarge)
+        androidx.compose.foundation.layout.Box {
+            OutlinedButton(onClick = { firstMenu = true }, modifier = Modifier.fillMaxWidth()) {
+                val selected = settings.participants.firstOrNull { it.id == g.firstModelId }
+                    ?: settings.participants.first()
+                Text(selected.name)
             }
+            DropdownMenu(expanded = firstMenu, onDismissRequest = { firstMenu = false }) {
+                settings.participants.filter { it.enabled }.forEach { model ->
+                    DropdownMenuItem(
+                        text = { Text(model.name) },
+                        onClick = {
+                            firstMenu = false
+                            onChange(g.copy(firstModelId = model.id))
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AboutAppSettings(onReset: () -> Unit) {
+    val context = LocalContext.current
+    val repoUrl = "https://github.com/Ayuemin/DisputeAI"
+
+    SettingsExpandableCard(
+        title = "О приложении",
+        subtitle = "DisputeAI ${BuildConfig.VERSION_NAME}",
+        initiallyExpanded = false,
+        stateKey = "about-app"
+    ) {
+        Text(
+            "Версия ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold
+        )
+        OutlinedButton(
+            onClick = {
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse(repoUrl))
+                context.startActivity(intent)
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Репозиторий на GitHub")
+        }
+
+        Divider(color = MaterialTheme.colorScheme.outlineVariant)
+        Text("Защита API-ключей", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "API-ключи хранятся только на устройстве в зашифрованном виде. Ключ шифрования защищён Android Keystore; API-ключи не записываются в историю чатов.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Divider(color = MaterialTheme.colorScheme.outlineVariant)
+        BackgroundWorkSettings(showHeading = true)
+
+        Divider(color = MaterialTheme.colorScheme.outlineVariant)
+        Text("Сброс настроек", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+        Text(
+            "История чатов и вложения останутся, но настройки моделей, общие параметры и сохранённые API-ключи будут сброшены.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        OutlinedButton(onClick = onReset, modifier = Modifier.fillMaxWidth()) {
+            Icon(Icons.Default.Refresh, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Сбросить настройки")
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SettingsClusterCard(
+fun SettingsExpandableCard(
     title: String,
     subtitle: String,
     initiallyExpanded: Boolean,
+    stateKey: String = title,
     content: @Composable () -> Unit
 ) {
-    var expanded by rememberSaveable(title) { mutableStateOf(initiallyExpanded) }
+    var expanded by rememberSaveable(stateKey) { mutableStateOf(initiallyExpanded) }
 
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -302,7 +360,7 @@ private fun SettingsClusterCard(
                         onClick = { expanded = !expanded },
                         onLongClick = { expanded = !expanded }
                     )
-                    .padding(start = 16.dp, end = 8.dp, top = 13.dp, bottom = 13.dp),
+                    .padding(start = 16.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
@@ -327,8 +385,8 @@ private fun SettingsClusterCard(
             if (expanded) {
                 Divider(color = MaterialTheme.colorScheme.outlineVariant)
                 Column(
-                    Modifier.fillMaxWidth().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     content()
                 }
