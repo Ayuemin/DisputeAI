@@ -88,7 +88,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -674,59 +673,68 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            item { SectionTitle("Участники дискуссии") }
-            items(state.settings.participants, key = { it.id }) { model ->
-                ModelSettingsCard(
-                    config = model,
-                    capability = state.capabilities[model.id],
-                    testState = state.modelTests[model.id],
-                    canDelete = state.settings.participants.size > 2,
-                    onChange = vm::updateParticipant,
-                    onSaveKey = { vm.saveApiKey(model.id, it) },
-                    onClearKey = { vm.clearApiKey(model.id) },
-                    onDelete = { vm.removeParticipant(model.id) },
-                    onTest = { vm.testModel(model.id) },
-                    onProbe = { vm.probeCapabilities(model.id) }
-                )
-            }
             item {
-                OutlinedButton(onClick = vm::addParticipant, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Add, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text("Добавить модель")
+                val enabledCount = state.settings.participants.count { it.enabled }
+                SettingsExpandableCard(
+                    title = "Участники дискуссии",
+                    subtitle = "$enabledCount участников · модель результата",
+                    initiallyExpanded = true,
+                    stateKey = "participants-section"
+                ) {
+                    state.settings.participants.forEach { model ->
+                        ModelSettingsCard(
+                            config = model,
+                            capability = state.capabilities[model.id],
+                            testState = state.modelTests[model.id],
+                            canDelete = state.settings.participants.size > 2,
+                            onChange = vm::updateParticipant,
+                            onSaveKey = { vm.saveApiKey(model.id, it) },
+                            onClearKey = { vm.clearApiKey(model.id) },
+                            onDelete = { vm.removeParticipant(model.id) },
+                            onTest = { vm.testModel(model.id) },
+                            onProbe = { vm.probeCapabilities(model.id) }
+                        )
+                    }
+
+                    OutlinedButton(onClick = vm::addParticipant, modifier = Modifier.fillMaxWidth()) {
+                        Icon(Icons.Default.Add, null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Добавить модель")
+                    }
+
+                    Divider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        "Модель результата",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    ModelSettingsCard(
+                        config = state.settings.resultModel,
+                        capability = state.capabilities[state.settings.resultModel.id],
+                        testState = state.modelTests[state.settings.resultModel.id],
+                        canDelete = false,
+                        onChange = vm::updateResultModel,
+                        onSaveKey = { vm.saveApiKey(state.settings.resultModel.id, it) },
+                        onClearKey = { vm.clearApiKey(state.settings.resultModel.id) },
+                        onDelete = {},
+                        onTest = { vm.testModel(state.settings.resultModel.id) },
+                        onProbe = { vm.probeCapabilities(state.settings.resultModel.id) }
+                    )
                 }
             }
-            item { Spacer(Modifier.height(4.dp)); SectionTitle("Модель результата") }
+
             item {
-                ModelSettingsCard(
-                    config = state.settings.resultModel,
-                    capability = state.capabilities[state.settings.resultModel.id],
-                    testState = state.modelTests[state.settings.resultModel.id],
-                    canDelete = false,
-                    onChange = vm::updateResultModel,
-                    onSaveKey = { vm.saveApiKey(state.settings.resultModel.id, it) },
-                    onClearKey = { vm.clearApiKey(state.settings.resultModel.id) },
-                    onDelete = {},
-                    onTest = { vm.testModel(state.settings.resultModel.id) },
-                    onProbe = { vm.probeCapabilities(state.settings.resultModel.id) }
-                )
-            }
-            item { Spacer(Modifier.height(4.dp)); SectionTitle("Общие") }
-            item {
-                GeneralSettingsCard(
+                ModernGeneralSettings(
                     settings = state.settings,
-                    onChange = vm::updateGeneral,
-                    onReset = { confirmReset = true }
+                    onChange = vm::updateGeneral
                 )
             }
+
             item {
-                Text(
-                    "API-ключи хранятся локально в зашифрованном виде с ключом из Android Keystore и не попадают в историю чатов.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(8.dp)
-                )
+                AboutAppSettings(onReset = { confirmReset = true })
             }
+
             item { Spacer(Modifier.navigationBarsPadding()) }
         }
     }
@@ -744,17 +752,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
     }
 }
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.titleMedium,
-        fontWeight = FontWeight.SemiBold,
-        color = MaterialTheme.colorScheme.onSurface,
-        modifier = Modifier.padding(horizontal = 4.dp, vertical = 6.dp)
-    )
-}
-
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ModelSettingsCard(
     config: ModelConfig,
@@ -788,7 +786,13 @@ private fun ModelSettingsCard(
     ) {
         Column(Modifier.fillMaxWidth()) {
             Row(
-                Modifier.fillMaxWidth().padding(start = 14.dp, end = 4.dp, top = 10.dp, bottom = 10.dp),
+                Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(
+                        onClick = { expanded = !expanded },
+                        onLongClick = { expanded = !expanded }
+                    )
+                    .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(Modifier.weight(1f)) {
@@ -799,9 +803,11 @@ private fun ModelSettingsCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = { expanded = !expanded }) {
-                    Icon(if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown, null)
-                }
+                Icon(
+                    if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                    if (expanded) "Свернуть настройки модели" else "Развернуть настройки модели",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             if (expanded) {
@@ -1120,37 +1126,6 @@ private fun ModelColorPickerDialog(initialColor: Int, onDismiss: () -> Unit, onC
         confirmButton = { TextButton(onClick = { onConfirm(preview) }) { Text("Применить") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )
-}
-
-@Composable
-private fun GeneralSettingsCard(settings: AppSettings, onChange: (GeneralSettings) -> Unit, onReset: () -> Unit) {
-    ModernGeneralSettings(
-        settings = settings,
-        onChange = onChange,
-        onReset = onReset
-    )
-}
-
-@Composable
-private fun PromptSetting(
-    label: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    onReset: () -> Unit
-) {
-    Column {
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            label = { Text(label) },
-            minLines = 4,
-            maxLines = 10,
-            modifier = Modifier.fillMaxWidth()
-        )
-        TextButton(onClick = onReset, modifier = Modifier.align(Alignment.End)) {
-            Text("Вернуть по умолчанию")
-        }
-    }
 }
 
 @Composable
