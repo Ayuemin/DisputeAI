@@ -17,7 +17,10 @@ data class ModelConfig(
     val reasoningEnabled: Boolean = false,
     val reasoningEffort: String = "auto",
     val reasoningBudget: Int = 0,
-    val responseColor: Int = DEFAULT_MODEL_COLOR
+    val responseColor: Int = DEFAULT_MODEL_COLOR,
+    val webSearchEnabled: Boolean = false,
+    val webSearchEngine: String = "auto",
+    val webSearchMaxCalls: Int = 2
 )
 
 data class GeneralSettings(
@@ -67,7 +70,8 @@ data class ChatMessage(
     val cycle: Int? = null,
     val isResult: Boolean = false,
     val error: Boolean = false,
-    val inProgress: Boolean = false
+    val inProgress: Boolean = false,
+    val discussionId: String? = null
 )
 
 data class ChatSession(
@@ -88,7 +92,8 @@ data class RunProgress(
     val mode: RunMode = RunMode.IDLE,
     val cycle: Int = 0,
     val currentModelId: String? = null,
-    val stopRequested: Boolean = false
+    val stopRequested: Boolean = false,
+    val discussionId: String? = null
 )
 
 data class UiState(
