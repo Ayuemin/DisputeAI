@@ -16,7 +16,8 @@ data class ModelConfig(
     val timeoutSec: Int = 180,
     val reasoningEnabled: Boolean = false,
     val reasoningEffort: String = "auto",
-    val reasoningBudget: Int = 0
+    val reasoningBudget: Int = 0,
+    val responseColor: Int = DEFAULT_MODEL_COLOR
 )
 
 data class GeneralSettings(
@@ -40,6 +41,12 @@ data class ModelCapability(
     val temperatureSupported: Boolean = true
 )
 
+data class ModelTestState(
+    val checking: Boolean = false,
+    val success: Boolean? = null,
+    val message: String = ""
+)
+
 data class AttachmentMeta(
     val id: String,
     val name: String,
@@ -57,12 +64,14 @@ data class ChatMessage(
     val attachmentIds: List<String> = emptyList(),
     val cycle: Int? = null,
     val isResult: Boolean = false,
-    val error: Boolean = false
+    val error: Boolean = false,
+    val inProgress: Boolean = false
 )
 
 data class ChatSession(
     val id: String = UUID.randomUUID().toString(),
     val title: String = "Новый чат",
+    val titleIsManual: Boolean = false,
     val pinned: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
@@ -87,6 +96,7 @@ data class UiState(
     val pendingAttachments: List<AttachmentMeta> = emptyList(),
     val run: RunProgress = RunProgress(),
     val capabilities: Map<String, ModelCapability> = emptyMap(),
+    val modelTests: Map<String, ModelTestState> = emptyMap(),
     val notice: String? = null
 ) {
     val activeChat: ChatSession?
@@ -104,14 +114,28 @@ const val DEFAULT_RESULT_PROMPT =
     "если решение или объяснение — итоговое решение или объяснение. Не пересказывай спор и не используй фиксированные рубрики, если они не нужны. " +
     "Если существенная неопределённость осталась, кратко укажи её."
 
+const val DEFAULT_MODEL_COLOR: Int = -10847750
+const val DEFAULT_MODEL_2_COLOR: Int = -5411882
+const val DEFAULT_RESULT_COLOR: Int = -14568085
+
+fun participantDefaultColor(index: Int): Int = when (index % 6) {
+    0 -> DEFAULT_MODEL_COLOR
+    1 -> DEFAULT_MODEL_2_COLOR
+    2 -> -2614432
+    3 -> -12213325
+    4 -> -10395316
+    else -> -5723992
+}
+
 fun defaultParticipants(): List<ModelConfig> = listOf(
-    ModelConfig(id = "m1", name = "Модель 1"),
-    ModelConfig(id = "m2", name = "Модель 2")
+    ModelConfig(id = "m1", name = "Модель 1", responseColor = participantDefaultColor(0)),
+    ModelConfig(id = "m2", name = "Модель 2", responseColor = participantDefaultColor(1))
 )
 
 fun defaultResultModel(): ModelConfig = ModelConfig(
     id = "result",
     name = "Модель результата",
     enabled = true,
-    systemPrompt = DEFAULT_RESULT_PROMPT
+    systemPrompt = DEFAULT_RESULT_PROMPT,
+    responseColor = DEFAULT_RESULT_COLOR
 )
