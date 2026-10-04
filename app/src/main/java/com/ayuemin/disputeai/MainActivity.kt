@@ -657,6 +657,11 @@ private fun Composer(
 @Composable
 private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> Unit) {
     var confirmReset by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        resetSettingsAccordion()
+    }
+
     Column(
         Modifier
             .fillMaxSize()
@@ -678,7 +683,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
                 SettingsExpandableCard(
                     title = "Участники дискуссии",
                     subtitle = "$enabledCount участников · модель результата",
-                    initiallyExpanded = true,
+                    initiallyExpanded = false,
                     stateKey = "participants-section"
                 ) {
                     state.settings.participants.forEach { model ->
@@ -694,6 +699,7 @@ private fun SettingsScreen(vm: DisputeViewModel, state: UiState, onBack: () -> U
                             onTest = { vm.testModel(model.id) },
                             onProbe = { vm.probeCapabilities(model.id) }
                         )
+                        Divider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
 
                     OutlinedButton(onClick = vm::addParticipant, modifier = Modifier.fillMaxWidth()) {
@@ -766,7 +772,7 @@ private fun ModelSettingsCard(
     onTest: () -> Unit,
     onProbe: () -> Unit
 ) {
-    var expanded by rememberSaveable(config.id) { mutableStateOf(false) }
+    val expanded = isSettingsModelExpanded(config.id)
     var apiKey by remember(config.id) { mutableStateOf("") }
     var providerMenu by remember { mutableStateOf(false) }
     var effortMenu by remember { mutableStateOf(false) }
@@ -789,8 +795,8 @@ private fun ModelSettingsCard(
                 Modifier
                     .fillMaxWidth()
                     .combinedClickable(
-                        onClick = { expanded = !expanded },
-                        onLongClick = { expanded = !expanded }
+                        onClick = { toggleSettingsModel(config.id) },
+                        onLongClick = { toggleSettingsModel(config.id) }
                     )
                     .padding(start = 14.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -1135,9 +1141,26 @@ private fun NumberSetting(label: String, value: Int, min: Int, max: Int, onChang
             Text(label)
             Text(value.toString(), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        IconButton(onClick = { if (value > min) onChange(value - 1) }) { Text("−", style = MaterialTheme.typography.titleLarge) }
-        Text(value.toString(), modifier = Modifier.width(36.dp), style = MaterialTheme.typography.bodyLarge)
-        IconButton(onClick = { if (value < max) onChange(value + 1) }) { Text("+", style = MaterialTheme.typography.titleLarge) }
+        Row(
+            modifier = Modifier.width(144.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            IconButton(
+                onClick = { if (value > min) onChange(value - 1) },
+                modifier = Modifier.size(48.dp)
+            ) { Text("−", style = MaterialTheme.typography.titleLarge) }
+            Text(
+                value.toString(),
+                modifier = Modifier.width(48.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge
+            )
+            IconButton(
+                onClick = { if (value < max) onChange(value + 1) },
+                modifier = Modifier.size(48.dp)
+            ) { Text("+", style = MaterialTheme.typography.titleLarge) }
+        }
     }
 }
 
