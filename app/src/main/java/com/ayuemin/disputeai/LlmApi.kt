@@ -22,7 +22,54 @@ object LlmApi {
     fun fail(e: Throwable?): JSONObject = JSONObject().apply {
         put("ok", false)
         val msg = e?.message?.takeIf { it.isNotBlank() } ?: e?.javaClass?.simpleName ?: "Неизвестная ошибка"
-        put("error", redact(msg))
+        put("error", userFriendlyError(msg))
+    }
+
+    @JvmStatic
+    fun userFriendlyError(raw: String): String {
+        val cleaned = redact(raw).trim()
+        if (cleaned.isBlank()) return "Не удалось выполнить запрос. Попробуйте ещё раз."
+        val providerMessage = extractProviderMessage(cleaned)?.trim().orEmpty()
+        val combined = (cleaned + "\n" + providerMessage).lowercase(Locale.ROOT)
+
+        return when {
+            "openrouter:web_search" in combined || "server tool" in combined && "web_search" in combined -> {
+                val code = httpCode(cleaned) ?: httpCode(providerMessage)
+                "Интернет-поиск OpenRouter временно недоступен${code?.let { " (HTTP $it)" }.orEmpty()}. " +
+                    "Попробуйте ещё раз или выберите другой движок поиска."
+            }
+            "reasoning is mandatory" in combined ||
+                "reasoning cannot be disabled" in combined ||
+                ("reasoning" in combined && "mandatory" in combined) ->
+                "Для этой модели размышление обязательно и не может быть выключено. " +
+                    "Оставьте «Размышление» включённым; если не уверены в уровне, выберите «Авто»."
+            ("reasoning" in combined && "effort" in combined && ("unsupported" in combined || "not supported" in combined || "invalid" in combined)) ||
+                "unsupported reasoning effort" in combined ->
+                "Выбранный уровень размышления не поддерживается этой моделью. Попробуйте уровень «Авто» или другой доступный уровень."
+            "provider_overloaded" in combined ||
+                "service temporarily overloaded" in combined ||
+                "provider is overloaded" in combined ||
+                "upstream error from nvidia" in combined ||
+                ("503" in combined && "overload" in combined) ->
+                "Провайдер модели временно перегружен (HTTP 503). Это не ошибка настроек. Попробуйте ещё раз через несколько секунд."
+            "rate limit" in combined || "too many requests" in combined || "http 429" in combined ->
+                "Превышен лимит запросов API (HTTP 429). Подождите немного и повторите попытку."
+            "context length" in combined || "context_length" in combined || "maximum context" in combined || "too many tokens" in combined ->
+                "Контекст запроса слишком большой для этой модели. Уменьшите объём истории, вложений или текста и попробуйте снова."
+            "invalid api key" in combined || "unauthorized" in combined || "authentication" in combined || "http 401" in combined ->
+                "Не удалось авторизоваться в API. Проверьте API-ключ и адрес сервиса."
+            "forbidden" in combined || "http 403" in combined ->
+                "API отклонил запрос (HTTP 403). Проверьте права API-ключа и доступность выбранной модели."
+            ("model" in combined && "not found" in combined) || "http 404" in combined ->
+                "Модель или API-адрес не найдены (HTTP 404). Проверьте ID модели и Base URL."
+            "timeout" in combined || "timed out" in combined || "sockettimeoutexception" in combined ->
+                "Модель не успела ответить за установленное время. Попробуйте ещё раз или увеличьте таймаут."
+            providerMessage.isNotBlank() -> {
+                val concise = providerMessage.replace(Regex("\\s+"), " ").take(500)
+                "Ошибка провайдера: $concise"
+            }
+            else -> cleaned.replace(Regex("\\s+"), " ").take(500)
+        }
     }
 
     @JvmStatic
@@ -66,11 +113,14 @@ object LlmApi {
                     reasoningObj?.optJSONArray("supported_efforts")?.let { arr ->
                         for (j in 0 until arr.length()) arr.optString(j).takeIf { it.isNotBlank() }?.let(efforts::add)
                     }
-                    val reasoning = "reasoning" in p || reasoningObj != null
+                    val reasoning = "reasoning" in p || reasoningObj != null || heuristicReasoningSupported(modelId)
                     return JSONObject().apply {
                         put("known", true)
                         put("reasoningSupported", reasoning)
-                        put("reasoningAlwaysOn", reasoningObj?.optBoolean("always_on", false) ?: false)
+                        put(
+                            "reasoningAlwaysOn",
+                            (reasoningObj?.optBoolean("always_on", false) ?: false) || heuristicReasoningAlwaysOn(modelId)
+                        )
                         put("supportedEfforts", JSONArray(efforts))
                         put("temperatureSupported", params == null || "temperature" in p)
                     }
@@ -80,17 +130,26 @@ object LlmApi {
         return heuristicCapabilities(modelId)
     }
 
-    private fun heuristicCapabilities(modelId: String): JSONObject {
+    private fun heuristicReasoningSupported(modelId: String): Boolean {
         val id = modelId.lowercase(Locale.ROOT)
-        val reasoning = listOf(
+        return listOf(
             "o1", "o3", "o4", "gpt-5", "gpt-6", "gpt-oss", "r1", "reason", "thinking",
-            "qwq", "deepseek-r", "glm-5", "kimi-k", "magistral"
+            "qwq", "deepseek-r", "glm-5", "kimi-k", "magistral", "nemotron"
         ).any { id.contains(it) }
+    }
+
+    private fun heuristicReasoningAlwaysOn(modelId: String): Boolean {
+        val id = modelId.lowercase(Locale.ROOT)
+        return id.contains("thinking") || id.contains("glm-5.3") || id.contains("nemotron-3-ultra")
+    }
+
+    private fun heuristicCapabilities(modelId: String): JSONObject {
+        val reasoning = heuristicReasoningSupported(modelId)
         val efforts = if (reasoning) JSONArray(listOf("low", "medium", "high")) else JSONArray()
         return JSONObject().apply {
             put("known", reasoning)
             put("reasoningSupported", reasoning)
-            put("reasoningAlwaysOn", id.contains("thinking") || id.contains("glm-5.3"))
+            put("reasoningAlwaysOn", heuristicReasoningAlwaysOn(modelId))
             put("supportedEfforts", efforts)
             put("temperatureSupported", true)
         }
@@ -364,10 +423,26 @@ object LlmApi {
         return if (redacted.length > MAX_ERROR_BODY) redacted.take(MAX_ERROR_BODY) + "…" else redacted
     }
 
+    private fun extractProviderMessage(raw: String): String? {
+        val start = raw.indexOf('{')
+        val end = raw.lastIndexOf('}')
+        if (start < 0 || end <= start) return null
+        val json = runCatching { JSONObject(raw.substring(start, end + 1)) }.getOrNull() ?: return null
+        return when (val error = json.opt("error")) {
+            is JSONObject -> error.optString("message").takeIf { it.isNotBlank() }
+            is String -> error.takeIf { it.isNotBlank() }
+            else -> json.optString("message").takeIf { it.isNotBlank() }
+        }
+    }
+
+    private fun httpCode(raw: String): Int? =
+        Regex("(?:HTTP\\s*)?(\\d{3})", RegexOption.IGNORE_CASE).find(raw)?.groupValues?.getOrNull(1)?.toIntOrNull()
+
     private fun redact(s: String): String = s
         .replace(keyQuery) { it.groupValues[1] + "***" }
         .replace(bearer, "Bearer ***")
         .replace(openAiStyleKey, "***")
+        .replace(Regex("(\"user_id\"\\s*:\\s*\")[^\"]+(\")", RegexOption.IGNORE_CASE)) { it.groupValues[1] + "***" + it.groupValues[2] }
 
     private fun trimSlash(s: String): String = s.trim().trimEnd('/')
 }
