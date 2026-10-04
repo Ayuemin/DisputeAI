@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 
 /** High-contrast dark palette tuned for readability on phone displays. */
@@ -75,6 +76,53 @@ val DisputeDarkColors = darkColorScheme(
     errorContainer = Color(0xFF93000A),
     onErrorContainer = Color(0xFFFFDAD6)
 )
+
+/**
+ * Shared accordion state for the settings screen.
+ * Root sections, discussion subsections and model cards each have their own level,
+ * so opening a child never collapses its parent.
+ */
+private object SettingsAccordionState {
+    var rootOpen by mutableStateOf<String?>(null)
+    var discussionOpen by mutableStateOf<String?>(null)
+    var modelOpen by mutableStateOf<String?>(null)
+
+    private fun isDiscussionChild(key: String): Boolean =
+        key.startsWith("discussion-") && key != "discussion-parameters"
+
+    fun isExpanded(key: String): Boolean =
+        if (isDiscussionChild(key)) discussionOpen == key else rootOpen == key
+
+    fun toggle(key: String) {
+        if (isDiscussionChild(key)) {
+            discussionOpen = if (discussionOpen == key) null else key
+            return
+        }
+
+        val next = if (rootOpen == key) null else key
+        if (rootOpen != next) {
+            discussionOpen = null
+            modelOpen = null
+        }
+        rootOpen = next
+    }
+
+    fun isModelExpanded(id: String): Boolean = modelOpen == id
+
+    fun toggleModel(id: String) {
+        modelOpen = if (modelOpen == id) null else id
+    }
+
+    fun reset() {
+        rootOpen = null
+        discussionOpen = null
+        modelOpen = null
+    }
+}
+
+fun resetSettingsAccordion() = SettingsAccordionState.reset()
+fun isSettingsModelExpanded(id: String): Boolean = SettingsAccordionState.isModelExpanded(id)
+fun toggleSettingsModel(id: String) = SettingsAccordionState.toggleModel(id)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -171,13 +219,13 @@ fun ModernGeneralSettings(
     SettingsExpandableCard(
         title = "Параметры дискуссии",
         subtitle = "Циклы, промпты и контекст результата",
-        initiallyExpanded = true,
+        initiallyExpanded = false,
         stateKey = "discussion-parameters"
     ) {
         SettingsExpandableCard(
             title = "Циклы и порядок участников",
             subtitle = "До ${g.rounds} циклов · первым: $firstName",
-            initiallyExpanded = true,
+            initiallyExpanded = false,
             stateKey = "discussion-cycles"
         ) {
             DiscussionCycleSettings(settings = settings, onChange = onChange)
@@ -210,13 +258,13 @@ fun ModernGeneralSettings(
 
         SettingsExpandableCard(
             title = "Контекст результата",
-            subtitle = if (g.resultUseAllCycles) "Вся дискуссия · последние циклы: ${g.resultContextCycles}" else "Первый цикл + последние ${g.resultContextCycles}",
+            subtitle = if (g.resultUseAllCycles) "Весь контекст дискуссии" else "Первый цикл + последние ${g.resultContextCycles}",
             initiallyExpanded = false,
             stateKey = "discussion-result-context"
         ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Использовать всю дискуссию")
+                    Text("Использовать весь контекст дискуссии")
                     Text(
                         "Реплики пользователя всегда включаются в контекст результата.",
                         style = MaterialTheme.typography.bodySmall,
@@ -229,18 +277,22 @@ fun ModernGeneralSettings(
                 )
             }
 
-            ModernNumberSetting("Последних циклов для результата", g.resultContextCycles, 1, 100) {
-                onChange(g.copy(resultContextCycles = it))
+            if (g.resultUseAllCycles) {
+                Text(
+                    "Модель результата получит весь доступный контекст дискуссии.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                ModernNumberSetting("Последних циклов для результата", g.resultContextCycles, 1, 100) {
+                    onChange(g.copy(resultContextCycles = it))
+                }
+                Text(
+                    "Независимый первый цикл сохраняется отдельно, к нему добавляются последние выбранные циклы и реплики пользователя.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            Text(
-                if (g.resultUseAllCycles) {
-                    "Сейчас используется вся дискуссия. Значение выше сохраняется и применяется, если этот режим выключить."
-                } else {
-                    "Независимый первый цикл сохраняется в контексте отдельно, к нему добавляются последние выбранные циклы."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
         }
     }
 }
@@ -339,6 +391,7 @@ fun AboutAppSettings(onReset: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
+@Suppress("UNUSED_PARAMETER")
 fun SettingsExpandableCard(
     title: String,
     subtitle: String,
@@ -346,7 +399,7 @@ fun SettingsExpandableCard(
     stateKey: String = title,
     content: @Composable () -> Unit
 ) {
-    var expanded by rememberSaveable(stateKey) { mutableStateOf(initiallyExpanded) }
+    val expanded = SettingsAccordionState.isExpanded(stateKey)
 
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -357,8 +410,8 @@ fun SettingsExpandableCard(
                 Modifier
                     .fillMaxWidth()
                     .combinedClickable(
-                        onClick = { expanded = !expanded },
-                        onLongClick = { expanded = !expanded }
+                        onClick = { SettingsAccordionState.toggle(stateKey) },
+                        onLongClick = { SettingsAccordionState.toggle(stateKey) }
                     )
                     .padding(start = 16.dp, end = 12.dp, top = 13.dp, bottom = 13.dp),
                 verticalAlignment = Alignment.CenterVertically
@@ -434,17 +487,30 @@ private fun ModernNumberSetting(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        IconButton(onClick = { if (value > min) onChange(value - 1) }) {
-            Text("−", style = MaterialTheme.typography.titleLarge)
-        }
-        Text(
-            value.toString(),
-            modifier = Modifier.width(36.dp),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-        IconButton(onClick = { if (value < max) onChange(value + 1) }) {
-            Text("+", style = MaterialTheme.typography.titleLarge)
+        Row(
+            modifier = Modifier.width(144.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceEvenly
+        ) {
+            IconButton(
+                onClick = { if (value > min) onChange(value - 1) },
+                modifier = Modifier.size(48.dp)
+            ) {
+                Text("−", style = MaterialTheme.typography.titleLarge)
+            }
+            Text(
+                value.toString(),
+                modifier = Modifier.width(48.dp),
+                textAlign = TextAlign.Center,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+            IconButton(
+                onClick = { if (value < max) onChange(value + 1) },
+                modifier = Modifier.size(48.dp)
+            ) {
+                Text("+", style = MaterialTheme.typography.titleLarge)
+            }
         }
     }
 }
