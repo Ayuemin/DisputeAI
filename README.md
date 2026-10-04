@@ -41,7 +41,7 @@ API-ключи хранятся локально в зашифрованном �
 gradle :app:assembleDebug
 ```
 
-GitHub Actions проверяет сборку при изменениях. Workflow также подготовлен для постоянной release-подписи через GitHub Secrets; настройка описана в `docs/signing.md`.
+GitHub Actions проверяет сборку при изменениях.
 
 ---
 
