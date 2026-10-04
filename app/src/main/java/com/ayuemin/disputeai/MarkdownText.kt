@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.text.method.LinkMovementMethod
+import android.widget.PopupMenu
 import android.widget.TextView
 import android.widget.Toast
 import androidx.compose.foundation.layout.Column
@@ -37,7 +38,6 @@ fun MarkdownText(
     selectable: Boolean = false
 ) {
     val context = LocalContext.current
-    var actionDialog by remember(markdown, selectable) { mutableStateOf(false) }
     var selectionDialog by remember(markdown, selectable) { mutableStateOf(false) }
     val markwon = remember(context) {
         Markwon.builder(context)
@@ -69,38 +69,30 @@ fun MarkdownText(
             if (selectable) {
                 view.setOnLongClickListener(null)
             } else {
-                view.setOnLongClickListener {
-                    actionDialog = true
+                view.setOnLongClickListener { anchor ->
+                    PopupMenu(anchor.context, anchor).apply {
+                        menu.add("Копировать ответ")
+                        menu.add("Выделить текст")
+                        setOnMenuItemClickListener { item ->
+                            when (item.title?.toString()) {
+                                "Копировать ответ" -> {
+                                    copyMarkdown(context, markdown)
+                                    true
+                                }
+                                "Выделить текст" -> {
+                                    selectionDialog = true
+                                    true
+                                }
+                                else -> false
+                            }
+                        }
+                    }.show()
                     true
                 }
             }
             markwon.setMarkdown(view, markdown)
         }
     )
-
-    if (!selectable && actionDialog) {
-        AlertDialog(
-            onDismissRequest = { actionDialog = false },
-            title = { Text("Действия с ответом") },
-            text = { Text("Можно скопировать ответ целиком или открыть его для выделения нужного фрагмента.") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        actionDialog = false
-                        copyMarkdown(context, markdown)
-                    }
-                ) { Text("Копировать ответ") }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        actionDialog = false
-                        selectionDialog = true
-                    }
-                ) { Text("Выделить текст") }
-            }
-        )
-    }
 
     if (!selectable && selectionDialog) {
         AlertDialog(
