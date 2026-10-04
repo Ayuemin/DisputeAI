@@ -102,6 +102,23 @@ object StreamingLlmApi {
         if (slot.optBoolean("temperatureEnabled", false)) put("temperature", slot.optDouble("temperature", 0.8))
         put("stream", stream)
 
+        val base = slot.optString("baseUrl", "")
+        if (slot.optBoolean("webSearchEnabled", false) && base.contains("openrouter.ai", ignoreCase = true)) {
+            val engine = slot.optString("webSearchEngine", "auto").lowercase(Locale.ROOT).let {
+                if (it in setOf("auto", "native", "exa", "parallel", "perplexity")) it else "auto"
+            }
+            val parameters = JSONObject().put("engine", engine)
+            put(
+                "tools",
+                JSONArray().put(
+                    JSONObject()
+                        .put("type", "openrouter:web_search")
+                        .put("parameters", parameters)
+                )
+            )
+            put("max_tool_calls", slot.optInt("webSearchMaxCalls", 2).coerceIn(1, 100))
+        }
+
         val modelId = slot.optString("model", "").lowercase(Locale.ROOT)
         val heuristicReasoning = listOf(
             "o1", "o3", "o4", "gpt-5", "gpt-6", "gpt-oss", "r1", "reason", "thinking",
