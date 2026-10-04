@@ -18,6 +18,7 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicLong
 
@@ -26,6 +27,16 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AppStore(app, secrets)
     private val runToken = AtomicLong(0)
     private val resultToken = AtomicLong(0)
+
+    private enum class ParticipationState { ACTIVE, DONE_PENDING, DONE }
+    private enum class DiscussionProtocolMode { NONE, NORMAL, CONFIRM_DONE, FINAL_SOLO }
+    private enum class DiscussionSignal { CONTINUE, DONE }
+    private data class ProtocolReply(val visibleText: String, val signal: DiscussionSignal)
+
+    private val statusMarkerRegex = Regex(
+        "\\[\\[\\s*DISPUTEAI_STATUS\\s*:\\s*(DONE|CONTINUE)\\s*]]",
+        RegexOption.IGNORE_CASE
+    )
 
     private val _state = MutableStateFlow(
         UiState(settings = store.loadSettings(), chats = store.loadChats())
@@ -385,18 +396,46 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val general = _state.value.settings.general
         val firstIndex = baseModels.indexOfFirst { it.id == general.firstModelId }.let { if (it < 0) 0 else it }
         val models = baseModels.drop(firstIndex) + baseModels.take(firstIndex)
+        val states = models.associate { it.id to ParticipationState.ACTIVE }.toMutableMap()
         val baselineIds = _state.value.activeChat
             ?.messages
             ?.filterNot { it.inProgress }
             ?.map { it.id }
             ?.toSet()
             .orEmpty()
+        var knownUserMessages = discussionUserMessageCount(discussionId)
+        var discussionComplete = false
 
         for (cycle in 1..general.rounds) {
+            var activeAtCycleStart = models.filter { states[it.id] != ParticipationState.DONE }
+            if (activeAtCycleStart.isEmpty()) break
+            var soloModelId = if (cycle > 1 && activeAtCycleStart.size == 1 && states[activeAtCycleStart.first().id] == ParticipationState.ACTIVE) {
+                activeAtCycleStart.first().id
+            } else null
+            var finalSoloWasRun = false
+
             for (model in models) {
                 if (runToken.get() != token) return
                 waitIfPaused(token)
                 if (runToken.get() != token) return
+
+                val nowUserMessages = discussionUserMessageCount(discussionId)
+                if (nowUserMessages > knownUserMessages) {
+                    states.keys.forEach { states[it] = ParticipationState.ACTIVE }
+                    knownUserMessages = nowUserMessages
+                    soloModelId = null
+                    activeAtCycleStart = models
+                }
+
+                val state = states[model.id] ?: ParticipationState.ACTIVE
+                if (state == ParticipationState.DONE) continue
+
+                val protocolMode = when {
+                    cycle == 1 -> DiscussionProtocolMode.NONE
+                    state == ParticipationState.DONE_PENDING -> DiscussionProtocolMode.CONFIRM_DONE
+                    soloModelId == model.id -> DiscussionProtocolMode.FINAL_SOLO
+                    else -> DiscussionProtocolMode.NORMAL
+                }
 
                 val chat = _state.value.activeChat ?: return
                 val contextChat = if (cycle == 1) {
@@ -418,31 +457,84 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
                     )
                     appendProgressMessage(chatId, model, cycle, isResult = false, discussionId = discussionId)
                 }
-                val result = askModel(model, contextChat, cycle = cycle) { text ->
-                    if (runToken.get() == token) {
-                        viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, text) }
+                val result = askModel(model, contextChat, cycle = cycle, protocolMode = protocolMode) { text ->
+                    if (runToken.get() == token && protocolMode != DiscussionProtocolMode.CONFIRM_DONE) {
+                        val visible = stripProtocolForDisplay(text)
+                        viewModelScope.launch(Dispatchers.Main) { updateProgressMessage(chatId, messageId, visible) }
                     }
                 }
                 if (runToken.get() != token) return
 
-                withContext(Dispatchers.Main) {
-                    if (result.optBoolean("ok")) {
-                        finalizeProgressMessage(chatId, messageId, result.optString("text"), error = false)
-                    } else {
-                        val error = result.optString("error", "Ошибка модели")
+                if (!result.optBoolean("ok")) {
+                    val error = result.optString("error", "Ошибка модели")
+                    withContext(Dispatchers.Main) {
                         finalizeProgressMessage(chatId, messageId, error, error = true)
                         notice("Цикл остановлен: $error")
                         stopCycle(markFinished = true)
                     }
+                    return
                 }
-                if (!result.optBoolean("ok")) return
+
+                val reply = parseProtocolReply(result.optString("text"), protocolMode)
+                when (protocolMode) {
+                    DiscussionProtocolMode.NONE -> {
+                        withContext(Dispatchers.Main) {
+                            if (reply.visibleText.isBlank()) removeProgressMessage(chatId, messageId)
+                            else finalizeProgressMessage(chatId, messageId, reply.visibleText, error = false)
+                        }
+                    }
+                    DiscussionProtocolMode.NORMAL -> {
+                        val acceptedDone = reply.signal == DiscussionSignal.DONE && reply.visibleText.isNotBlank()
+                        states[model.id] = if (acceptedDone) ParticipationState.DONE_PENDING else ParticipationState.ACTIVE
+                        withContext(Dispatchers.Main) {
+                            if (reply.visibleText.isBlank()) removeProgressMessage(chatId, messageId)
+                            else finalizeProgressMessage(chatId, messageId, reply.visibleText, error = false)
+                        }
+                    }
+                    DiscussionProtocolMode.CONFIRM_DONE -> {
+                        if (reply.signal == DiscussionSignal.DONE) {
+                            states[model.id] = ParticipationState.DONE
+                            withContext(Dispatchers.Main) { removeProgressMessage(chatId, messageId) }
+                        } else {
+                            states[model.id] = ParticipationState.ACTIVE
+                            withContext(Dispatchers.Main) {
+                                if (reply.visibleText.isBlank()) removeProgressMessage(chatId, messageId)
+                                else finalizeProgressMessage(chatId, messageId, reply.visibleText, error = false)
+                            }
+                        }
+                    }
+                    DiscussionProtocolMode.FINAL_SOLO -> {
+                        states[model.id] = ParticipationState.ACTIVE
+                        finalSoloWasRun = true
+                        withContext(Dispatchers.Main) {
+                            if (reply.visibleText.isBlank()) removeProgressMessage(chatId, messageId)
+                            else finalizeProgressMessage(chatId, messageId, reply.visibleText, error = false)
+                        }
+                    }
+                }
+            }
+
+            val remaining = states.values.count { it != ParticipationState.DONE }
+            if (remaining == 0 || finalSoloWasRun) {
+                discussionComplete = true
+                break
             }
         }
+
         if (runToken.get() == token) withContext(Dispatchers.Main) {
             _state.value = _state.value.copy(run = RunProgress())
-            updateActiveChat { it.copy(discussionFinished = true, updatedAt = System.currentTimeMillis()) }
+            updateActiveChat {
+                it.copy(
+                    discussionFinished = true,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+            if (discussionComplete) notice("Обсуждение завершено: существенных новых возражений не осталось.")
         }
     }
+
+    private fun discussionUserMessageCount(discussionId: String): Int =
+        _state.value.activeChat?.messages?.count { it.authorId == "user" && it.discussionId == discussionId } ?: 0
 
     private suspend fun waitIfPaused(token: Long) {
         while (runToken.get() == token && _state.value.run.mode == RunMode.PAUSED) delay(120)
@@ -561,10 +653,11 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         chat: ChatSession,
         resultMode: Boolean = false,
         cycle: Int? = null,
+        protocolMode: DiscussionProtocolMode = DiscussionProtocolMode.NONE,
         onProgress: (String) -> Unit = {}
     ): JSONObject {
         val started = System.currentTimeMillis()
-        val system = buildSystem(model, chat, resultMode, cycle)
+        val system = buildSystem(model, chat, resultMode, cycle, protocolMode)
         val slot = slotJson(model, system)
         val messages = buildMessages(model, chat)
         var accumulated = ""
@@ -642,7 +735,13 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun buildSystem(model: ModelConfig, chat: ChatSession, resultMode: Boolean, cycle: Int?): String {
+    private fun buildSystem(
+        model: ModelConfig,
+        chat: ChatSession,
+        resultMode: Boolean,
+        cycle: Int?,
+        protocolMode: DiscussionProtocolMode
+    ): String {
         val participants = _state.value.settings.participants.filter { it.enabled }.joinToString(", ") { it.name }
         val general = _state.value.settings.general
         val base = if (resultMode) {
@@ -659,13 +758,71 @@ class DisputeViewModel(app: Application) : AndroidViewModel(app) {
         val searchRule = if (model.webSearchEnabled) {
             "\n\nИнтернет-поиск доступен. Используй его только когда для задачи действительно нужны актуальные, проверяемые или неизвестные тебе факты. Не ищи в интернете ради самого поиска."
         } else ""
+        val protocol = if (resultMode) "" else discussionProtocolPrompt(protocolMode)
         return buildString {
             append(base)
             if (model.systemPrompt.isNotBlank()) append("\n\n").append(model.systemPrompt.trim())
             if (stage.isNotBlank()) append("\n\n").append(stage)
+            if (protocol.isNotBlank()) append("\n\n").append(protocol)
             append(searchRule)
             append(attachmentCatalog(chat))
         }
+    }
+
+    private fun discussionProtocolPrompt(mode: DiscussionProtocolMode): String = when (mode) {
+        DiscussionProtocolMode.NONE -> ""
+        DiscussionProtocolMode.NORMAL ->
+            "СЛУЖЕБНЫЙ ПРОТОКОЛ DISPUTEAI. После содержательной части ответа обязательно поставь ровно один маркер: " +
+                "[[DISPUTEAI_STATUS:CONTINUE]] — если после внимательной проверки ответов других участников у тебя остаётся существенное возражение, исправление, новая идея или полезное дополнение; " +
+                "[[DISPUTEAI_STATUS:DONE]] — если существенных замечаний и дополнений больше нет. " +
+                "Не выбирай DONE ради согласия или чтобы закончить быстрее. В первый раз, когда выбираешь DONE, всё равно дай перед маркером нормальную полезную реакцию на текущий круг; не отвечай одним DONE. " +
+                "Если сомневаешься — выбирай CONTINUE. Маркер служебный: не объясняй его пользователю."
+        DiscussionProtocolMode.CONFIRM_DONE ->
+            "СЛУЖЕБНЫЙ ПРОТОКОЛ DISPUTEAI. В предыдущем круге ты уже сообщил, что существенных дополнений больше нет. Сейчас проверь только новые ответы, появившиеся после твоей прошлой реплики. " +
+                "Если появился новый аргумент, ошибка, важное упущение или причина изменить позицию — дай только необходимый содержательный ответ и заверши его [[DISPUTEAI_STATUS:CONTINUE]]. " +
+                "Если по-прежнему нечего существенно добавить — ничего не повторяй, не пиши пояснений и ответь только [[DISPUTEAI_STATUS:DONE]]. " +
+                "Если сомневаешься — выбирай CONTINUE."
+        DiscussionProtocolMode.FINAL_SOLO ->
+            "Ты остался единственным активным участником обсуждения. Сделай один последний содержательный проход: учти последние полезные реплики выбывших участников, исправь только действительно важное и сформулируй свою финальную позицию без повторов. Служебный статус больше не нужен."
+    }
+
+    private fun parseProtocolReply(raw: String, mode: DiscussionProtocolMode): ProtocolReply {
+        var signal = DiscussionSignal.CONTINUE
+        val markers = statusMarkerRegex.findAll(raw).toList()
+        markers.lastOrNull()?.groupValues?.getOrNull(1)?.let { value ->
+            signal = if (value.equals("DONE", ignoreCase = true)) DiscussionSignal.DONE else DiscussionSignal.CONTINUE
+        }
+
+        if (mode == DiscussionProtocolMode.CONFIRM_DONE && markers.isEmpty()) {
+            val compact = raw.trim().uppercase(Locale.ROOT).replace(" ", "")
+            if (compact in setOf("DONE", "DONE.", "[[DONE]]", "[DONE]")) signal = DiscussionSignal.DONE
+        }
+
+        var visible = stripProtocolForDisplay(raw).trim()
+        when (mode) {
+            DiscussionProtocolMode.NONE, DiscussionProtocolMode.FINAL_SOLO -> signal = DiscussionSignal.CONTINUE
+            DiscussionProtocolMode.NORMAL -> {
+                if (signal == DiscussionSignal.DONE && visible.isBlank()) signal = DiscussionSignal.CONTINUE
+            }
+            DiscussionProtocolMode.CONFIRM_DONE -> {
+                if (signal == DiscussionSignal.DONE) visible = ""
+            }
+        }
+        return ProtocolReply(visible, signal)
+    }
+
+    private fun stripProtocolForDisplay(text: String): String {
+        var cleaned = statusMarkerRegex.replace(text, "")
+        val upper = cleaned.uppercase(Locale.ROOT)
+        val open = upper.lastIndexOf("[[")
+        if (open >= 0) {
+            val tail = upper.substring(open)
+            val target = "[[DISPUTEAI_STATUS"
+            if (target.startsWith(tail) || tail.startsWith(target)) {
+                cleaned = cleaned.substring(0, open)
+            }
+        }
+        return cleaned.trimEnd()
     }
 
     private fun attachmentCatalog(chat: ChatSession): String {
