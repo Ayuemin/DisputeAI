@@ -43,6 +43,10 @@ gradle :app:assembleDebug
 
 GitHub Actions проверяет сборку при изменениях.
 
+## Лицензия
+
+DisputeAI распространяется по лицензии **GNU GPL v3.0 or later (`GPL-3.0-or-later`)**. См. файл `LICENSE`.
+
 ---
 
 Репозиторий: **Ayuemin/DisputeAI**
