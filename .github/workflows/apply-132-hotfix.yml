@@ -1,0 +1,146 @@
+name: Apply 1.3.2 rendering hotfix
+
+on:
+  push:
+    branches:
+      - work/ui-polish-streaming
+    paths:
+      - .github/workflows/apply-132-hotfix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: work/ui-polish-streaming
+
+      - name: Apply fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          main = Path('app/src/main/java/com/ayuemin/disputeai/MainActivity.kt')
+          text = main.read_text()
+
+          old_scaffold = '''            Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                snackbarHost = { SnackbarHost(snack) }
+            ) { padding ->
+                ChatScreen(
+                    state = state,
+                    vm = vm,
+                    onMenu = {
+                        keyboard?.hide()
+                        scope.launch { drawerState.open() }
+                    },
+                    modifier = Modifier.padding(padding)
+                )
+            }
+'''
+          new_scaffold = '''            Scaffold(
+                contentWindowInsets = WindowInsets(0, 0, 0, 0)
+            ) { padding ->
+                ChatScreen(
+                    state = state,
+                    vm = vm,
+                    onMenu = {
+                        keyboard?.hide()
+                        scope.launch { drawerState.open() }
+                    },
+                    modifier = Modifier.padding(padding)
+                )
+            }
+
+            SnackbarHost(
+                hostState = snack,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 58.dp)
+                    .widthIn(max = 520.dp)
+            ) { data ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    tonalElevation = 6.dp
+                ) {
+                    Text(
+                        data.visuals.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+                }
+            }
+'''
+
+          old_render = '''                        if (isUser) {
+                            Text(message.text, style = MaterialTheme.typography.bodyLarge)
+                        } else {
+                            MarkdownText(message.text, modifier = Modifier.fillMaxWidth())
+                        }
+'''
+          new_render = '''                        if (isUser) {
+                            Text(message.text, style = MaterialTheme.typography.bodyLarge)
+                        } else if (message.inProgress) {
+                            Text(
+                                message.text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        } else {
+                            MarkdownText(message.text, modifier = Modifier.fillMaxWidth())
+                        }
+'''
+
+          if text.count(old_scaffold) != 1:
+              raise SystemExit(f'Expected one scaffold block, found {text.count(old_scaffold)}')
+          if text.count(old_render) != 1:
+              raise SystemExit(f'Expected one render block, found {text.count(old_render)}')
+
+          text = text.replace(old_scaffold, new_scaffold)
+          text = text.replace(old_render, new_render)
+          main.write_text(text)
+
+          gradle = Path('app/build.gradle')
+          g = gradle.read_text()
+          old_version = "        versionCode 8\n        versionName '1.3.1'"
+          new_version = "        versionCode 9\n        versionName '1.3.2'"
+          if g.count(old_version) != 1:
+              raise SystemExit('Expected 1.3.1 version block once')
+          gradle.write_text(g.replace(old_version, new_version))
+
+          changelog = Path('CHANGELOG.md')
+          c = changelog.read_text()
+          marker = '# Changelog\n\n'
+          entry = '''## 1.3.2
+
+- Во время streaming ответ отображается как обычный текст без повторного тяжёлого Markdown-рендеринга; после завершения ответ один раз преобразуется в полноценный Markdown.
+- Убрано мерцание длинных streaming-ответов и таблиц при поступлении новых фрагментов.
+- Внутренние уведомления приложения перенесены наверх и оформлены компактной тёмной плашкой, чтобы не перекрывать поле ввода.
+
+'''
+          if not c.startswith(marker):
+              raise SystemExit('Unexpected changelog header')
+          if '## 1.3.2' in c:
+              raise SystemExit('1.3.2 changelog already exists')
+          changelog.write_text(marker + entry + c[len(marker):])
+          PY
+
+          git diff --check
+          grep -q "versionName '1.3.2'" app/build.gradle
+          grep -q 'else if (message.inProgress)' app/src/main/java/com/ayuemin/disputeai/MainActivity.kt
+          grep -q 'Alignment.TopCenter' app/src/main/java/com/ayuemin/disputeai/MainActivity.kt
+
+          git rm .github/workflows/apply-132-hotfix.yml
+          git config user.name "Ayuemin"
+          git config user.email "105455063+Ayuemin@users.noreply.github.com"
+          git add app/src/main/java/com/ayuemin/disputeai/MainActivity.kt app/build.gradle CHANGELOG.md
+          git commit -m "Fix streaming rendering and notice placement"
+          git push origin HEAD:work/ui-polish-streaming
