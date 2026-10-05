@@ -397,7 +397,7 @@ private fun ChatScreen(state: UiState, vm: DisputeViewModel, onMenu: () -> Unit,
     val lastDiscussionTime = chat?.messages?.filter { !it.isResult && !it.inProgress }?.maxOfOrNull { it.timestamp } ?: Long.MIN_VALUE
     val showResult = chat?.discussionFinished == true && lastDiscussionTime > lastResultTime && chat.messages.none { it.isResult && it.inProgress }
 
-    LaunchedEffect(chat?.messages?.size, chat?.messages?.lastOrNull()?.text?.length, showResult) {
+    LaunchedEffect(chat?.messages?.size, showResult) {
         val count = chat?.messages?.size ?: 0
         if (count > 0) {
             val target = if (showResult) count else count - 1
@@ -935,14 +935,24 @@ private fun ApiProfileCard(
   singleLine = true,
   modifier = Modifier.fillMaxWidth()
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-  Button(
-      onClick = { if (apiKey.isNotBlank()) { onSaveKey(apiKey); apiKey = "" } },
-      enabled = apiKey.isNotBlank()
-  ) { Text("Сохранить ключ") }
-  if (profile.hasApiKey) TextButton(onClick = onClearKey) { Text("Удалить ключ") }
-  Spacer(Modifier.weight(1f))
-  TextButton(onClick = onDelete) { Text("Удалить подключение") }
+        Button(
+            onClick = { if (apiKey.isNotBlank()) { onSaveKey(apiKey); apiKey = "" } },
+            enabled = apiKey.isNotBlank(),
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Сохранить ключ") }
+        if (profile.hasApiKey) {
+            OutlinedButton(
+                onClick = onClearKey,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("Удалить ключ") }
+        }
+        OutlinedButton(
+            onClick = onDelete,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Icon(Icons.Default.Delete, null)
+            Spacer(Modifier.width(8.dp))
+            Text("Удалить подключение")
         }
     }
 }
