@@ -205,8 +205,7 @@ private fun DisputeApp(vm: DisputeViewModel) {
                 .wideDrawerOpenGesture(drawerState, scope)
         ) {
             Scaffold(
-                contentWindowInsets = WindowInsets(0, 0, 0, 0),
-                snackbarHost = { SnackbarHost(snack) }
+                contentWindowInsets = WindowInsets(0, 0, 0, 0)
             ) { padding ->
                 ChatScreen(
                     state = state,
@@ -217,6 +216,28 @@ private fun DisputeApp(vm: DisputeViewModel) {
                     },
                     modifier = Modifier.padding(padding)
                 )
+            }
+
+            SnackbarHost(
+                hostState = snack,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(start = 16.dp, end = 16.dp, top = 58.dp)
+                    .widthIn(max = 520.dp)
+            ) { data ->
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                    tonalElevation = 6.dp
+                ) {
+                    Text(
+                        data.visuals.message,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                    )
+                }
             }
         }
     }
@@ -566,6 +587,12 @@ private fun MessageBubble(message: ChatMessage, chat: ChatSession, model: ModelC
                     if (message.text.isNotBlank()) {
                         if (isUser) {
                             Text(message.text, style = MaterialTheme.typography.bodyLarge)
+                        } else if (message.inProgress) {
+                            Text(
+                                message.text,
+                                style = MaterialTheme.typography.bodyLarge,
+                                modifier = Modifier.fillMaxWidth()
+                            )
                         } else {
                             MarkdownText(message.text, modifier = Modifier.fillMaxWidth())
                         }
